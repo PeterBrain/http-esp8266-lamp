@@ -1,9 +1,6 @@
 /*
 * https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/examples/WiFiWebServer/WiFiWebServer.ino
 * 
-* This sketch demonstrates how to set up a simple HTTP-like server.
-* The server will set a GPIO pin depending on the request
-* 
 * Homebridge:
 * http://server_ip/off
 * http://server_ip/on
@@ -12,11 +9,14 @@
 * http://server_ip/lvl/
 * http://server_ip/hue/
 * http://server_ip/hue_status/
-* http://server_ip/saturation/
-* http://server_ip/saturation_status/
+* http://server_ip/sat/
+* http://server_ip/sat_status/
 * 
 * OTA Update
 * http://server_ip/ota/
+* 
+* To upload a new version of the sketch, browse http://server_ip/ota/ first...
+* this will set the ESP8266 in OTA Mode
 */
 
 #include <ESP8266WiFi.h>
@@ -24,7 +24,7 @@
 #include <WiFiUdp.h> //for OTA
 #include <ArduinoOTA.h> //for OTA
 
-//global vars
+//global
 #define red 15 //D8 - Red channel
 #define green 12 //D6 - Green channel
 #define blue 13 //D7 - Blue channel
@@ -35,26 +35,25 @@
 const char* ssid = "";
 const char* password = "";
 
-int out; //output value
 int state; //current state
+int _delay; //delay between brightness, hue & saturation steps
+int r, g, b; //output values
 
 //brightness
-int lvl; //current brightness
-int lvl_direction; //self-descriptive
-int i_lvl; //current brightness step
-int _delay; //delay between brightness, hue & saturation steps
+int lvl; //brightness 0-100
+int i_lvl;
+int lvl_direction;
 
 //color
-int hue;
+int hue; //color 0-359
 int i_hue;
-int hue_direction;
-int sat;
+int hue_direction; //clockwise, counter-clockwise
+int sat; //saturation 0-100
 int i_sat;
 int sat_direction;
-int r, g, b;
 
 //physical
-int io_before; //last io state
+int _io; //last io state
 int io; //new io state
 
 bool otaFlag = false;
@@ -69,7 +68,7 @@ int WiFiStart() {
   IPAddress subnet(255,255,255,0); //subnet mask*/
 
   //WiFi.config(ip, gateway, subnet);
-  WiFi.mode(WIFI_STA);
+  WiFi.mode(WIFI_STA); //configure as wifi station
   WiFi.begin(ssid, password); //connect to network
 
   //wait for connection result
@@ -98,16 +97,16 @@ int set_value(int set_r, int set_g, int set_b) {
   analogWrite(blue, set_b);
 }
 
-int smooth_hsv(int current_state, int _hue, int _sat, int _lvl) {
+int smooth_hsv(int _state, int _hue, int _sat, int _lvl) {
   int temp_hue;
   int temp_sat;
   int temp_lvl;
   
-  if (current_state == 0) {
+  if (_state == 0) { //off
     i_hue = 0;
     i_sat = 100;
     i_lvl = 0;
-  } //off
+  }
 
   if (i_hue > _hue) {temp_hue = i_hue - _hue;}
   else if (i_hue < _hue) {temp_hue = _hue - i_hue;}
@@ -128,7 +127,7 @@ int smooth_hsv(int current_state, int _hue, int _sat, int _lvl) {
     temp_sat = _sat - i_sat;
   }
   else {
-    sat_direction = 2;
+    sat_direction = 2; //not changed
     temp_sat = 0;
   }
 
@@ -141,7 +140,7 @@ int smooth_hsv(int current_state, int _hue, int _sat, int _lvl) {
     temp_lvl = _lvl - i_lvl;
   }
   else {
-    lvl_direction = 2;
+    lvl_direction = 2; //not changed
     temp_lvl = 0;
   }
 
@@ -179,6 +178,7 @@ int smooth_hsv(int current_state, int _hue, int _sat, int _lvl) {
     
     delay(_delay);
 
+    //reached maximum?
     if (i_lvl == _lvl) {lvl_direction = 2;}
     if (i_hue == _hue) {hue_direction = 2;}
     if (i_sat == _sat) {sat_direction = 2;}
@@ -192,18 +192,17 @@ int smooth_hsv(int current_state, int _hue, int _sat, int _lvl) {
 int phys_switch() {
   io = digitalRead(d_input);
   
-  if (io != io_before) {
+  if (io != _io) {
     if (io == HIGH) {
       smooth_hsv(state, hue, sat, 0);
       state = 0;
     } else {
-      lvl = 100;
-      smooth_hsv(state, hue, sat, lvl);
+      smooth_hsv(state, hue, sat, 100);
       state = 1;
     }
   }
   
-  io_before = io;
+  _io = io;
   delay(_delay);
 }
 
@@ -266,9 +265,10 @@ void hsv2rgb(float h, float s, float v) {
 
 int OTA() {
   Serial.println("OTA");
-  //ArduinoOTA.setPort(8266);
-  //ArduinoOTA.setHostname("myesp8266");
-  //ArduinoOTA.setPassword((const char *)"123");
+  
+  /*ArduinoOTA.setPort(8266);
+  ArduinoOTA.setHostname("ESP8266");
+  ArduinoOTA.setPassword((const char *)"123");*/
   
   ArduinoOTA.onStart([]() {
     all_off();
@@ -296,7 +296,6 @@ int OTA() {
 
 void setup() {
   state = 0;
-  out = 0;
 
   //brightness
   lvl = 0;
@@ -307,7 +306,7 @@ void setup() {
   sat = 100;
 
   //physical
-  io_before = 0;
+  _io = 0;
   io = 0;
 
   Serial.begin(115200);
@@ -350,8 +349,6 @@ void loop() {
           String response;
           response += "HTTP/1.1 200 OK\r\n";
           response += "Content-Type: text/html\r\n\r\n";
-          //response += "<!DOCTYPE HTML>\r\n";
-          //response += "<html>\r\n";
   
           if (readString.indexOf("/off") != -1) {
             if (state == 1) {
@@ -372,12 +369,11 @@ void loop() {
             char charBuf[50];
             readString.toCharArray(charBuf, 50);
             lvl = atoi(strtok(charBuf, "GET /lvl/"));
-            
             smooth_hsv(state, hue, sat, lvl);
-  
+
             if (lvl != 0) {state = 1;}
             else {state = 0;}
-  
+            
             response += lvl;
           }
 
@@ -389,10 +385,10 @@ void loop() {
             response += hue;
           }
 
-          if (readString.indexOf("/saturation/") != -1) {
+          if (readString.indexOf("/sat/") != -1) {
             char charBuf_sat[50];
             readString.toCharArray(charBuf_sat, 50);
-            sat = atoi(strtok(charBuf_sat, "GET /saturation/"));
+            sat = atoi(strtok(charBuf_sat, "GET /sat/"));
             smooth_hsv(state, hue, sat, lvl);
             response += sat;
           }
@@ -400,7 +396,7 @@ void loop() {
           if (readString.indexOf("/io_status/") != -1) {response += state;}
           if (readString.indexOf("/lvl_status/") != -1) {response += lvl;}
           if (readString.indexOf("/hue_status/") != -1) {response += hue;}
-          if (readString.indexOf("/saturation_status/") != -1) {response += sat;}
+          if (readString.indexOf("/sat_status/") != -1) {response += sat;}
 
           if (readString.indexOf("/ota/") != -1) {
             OTA();
@@ -411,11 +407,11 @@ void loop() {
             response += "ESP8266 is now in OTA Mode. In this mode you can upload new firmware to the device.";
             response += "</html>\n";
           }
-  
-          //response += "</html>\n";
+          
           client.print(response);
           
           delay(1);
+          
           client.flush();
           client.stop();
           
