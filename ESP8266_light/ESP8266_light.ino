@@ -11,6 +11,7 @@
 * http://server_ip/hue_status/
 * http://server_ip/sat/
 * http://server_ip/sat_status/
+* http://server_ip/dht/
 * 
 * OTA Update
 * http://server_ip/ota/
@@ -23,51 +24,190 @@
 #include <ESP8266mDNS.h> //for OTA
 #include <WiFiUdp.h> //for OTA
 #include <ArduinoOTA.h> //for OTA
+#include "DHT.h" //for DHT22
 
 //global
 #define red 15 //D8 - Red channel
 #define green 12 //D6 - Green channel
 #define blue 13 //D7 - Blue channel
 #define d_input 5 //D1 - Physical Switch
-
+#define DHTpin 14 //D - DHT22 Humidity + Temperature Sensor
 #define PWMRANGE 1023 //ESP8266 -> maximum brightness
 
-const char* ssid = "";
-const char* password = "";
+DHT dht(DHTpin, DHT22); //pin, model
 
 int state; //current state
 int _delay; //delay between brightness, hue & saturation steps
 int r, g, b; //output values
 
-//brightness
-int lvl; //brightness 0-100
-int i_lvl;
-int lvl_direction;
+int io, _io; //physical - current, prev
 
-//color
-int hue; //color 0-359
-int i_hue;
-int hue_direction; //clockwise, counter-clockwise
-int sat; //saturation 0-100
-int i_sat;
-int sat_direction;
+int hue, i_hue, hue_direction; //color
+int sat, i_sat, sat_direction; //saturation
+int lvl, i_lvl, lvl_direction; //brightness
 
-//physical
-int _io; //last io state
-int io; //new io state
+float humidity, temp_c, temp_f; //DHT
+unsigned long prev_ms, dht_interval; //time vars
 
-bool otaFlag = false;
+bool otaFlag = false; //OTA
 
-String readString; //request variable
+String readString;
+
+const char* ssid = "";
+const char* password = "";
 
 WiFiServer server(80); //server instance; listen port 80
+//ESP8266WebServer server(80);
+
+void setup() {
+  state = 0;
+  _delay = 5;
+
+  //HSB
+  hue = 0;
+  sat = 100;
+  lvl = 0;
+
+  //physical
+  _io = 0;
+  io = 0;
+
+  //DHT
+  prev_ms = 0;
+  dht_interval = 2000; //DHT22
+
+  Serial.begin(115200);
+  pinMode(red, OUTPUT);
+  pinMode(green, OUTPUT);
+  pinMode(blue, OUTPUT);
+  pinMode(d_input, INPUT_PULLUP);
+
+  WiFiStart();
+  all_off();
+
+  dht.begin();
+  server.begin(); //start server
+}
+
+void loop() {
+  if (otaFlag) {
+    ArduinoOTA.handle();
+  } else {
+    phys_switch();
+
+    if (WiFi.status() != WL_CONNECTED) {WiFiStart();} //reconnect if lost
+    WiFiClient client = server.available(); //if client connected
+
+    if (!client) {return;} //no client; restart loop
+    while (!client.available()) {delay(1);} //wait until client send data
+
+    if (client) { //client found
+      while (client.connected()) {
+
+        char c = client.read();
+        if (readString.length() < 100) {
+          readString += c;
+        }
+        //readString = client.readStringUntil('\r');
+
+        if (c == '\n') {
+          //prepare response
+          /*client.println("HTTP/1.1 200 OK");
+          client.println("Content-Type: text/html");
+          client.println();
+          String response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<!DOCTYPE HTML>\r\n<html>\r\n";*/
+          String response, json;
+          response += "HTTP/1.1 200 OK\r\n";
+          response += "Content-Type: text/html\r\n\r\n";
+          json += "HTTP/1.1 200 OK\r\n";
+          json += "Content-Type: application/json;charset=utf-8\r\n\r\n";
+
+          if (readString.indexOf("/off") != -1) {
+            if (state == 1) {
+              smooth_hsv(state, hue, sat, 0);
+              state = 0;
+            }
+            response += state;
+            client.print(response);
+          }
+
+          if (readString.indexOf("/on") > 0) {
+            if (lvl == 0) {lvl = PWMRANGE;}
+            smooth_hsv(state, hue, sat, lvl);
+            state = 1;
+            response += state;
+            client.print(response);
+          }
+
+          if (readString.indexOf("/lvl/") != -1) {
+            char charBuf[50];
+            readString.toCharArray(charBuf, 50);
+            lvl = atoi(strtok(charBuf, "GET /lvl/"));
+            smooth_hsv(state, hue, sat, lvl);
+
+            if (lvl != 0) {state = 1;}
+            else {state = 0;}
+
+            response += lvl;
+            client.print(response);
+          }
+
+          if (readString.indexOf("/hue/") != -1) {
+            char charBuf_hue[50];
+            readString.toCharArray(charBuf_hue, 50);
+            hue = atoi(strtok(charBuf_hue, "GET /hue/"));
+            smooth_hsv(state, hue, sat, lvl);
+            response += hue;
+            client.print(response);
+          }
+
+          if (readString.indexOf("/sat/") != -1) {
+            char charBuf_sat[50];
+            readString.toCharArray(charBuf_sat, 50);
+            sat = atoi(strtok(charBuf_sat, "GET /sat/"));
+            smooth_hsv(state, hue, sat, lvl);
+            response += sat;
+            client.print(response);
+          }
+
+          if (readString.indexOf("/io_status/") != -1) {response += state; client.print(response);}
+          if (readString.indexOf("/lvl_status/") != -1) {response += lvl; client.print(response);}
+          if (readString.indexOf("/hue_status/") != -1) {response += hue; client.print(response);}
+          if (readString.indexOf("/sat_status/") != -1) {response += sat; client.print(response);}
+
+          if (readString.indexOf("/dht/") != -1) {
+            dht22();
+            json += "{\n" "\"temperature\": " + String(temp_c) + ",\n ""\"humidity\": " + String(humidity) + "" "\n}";
+            client.print(json);
+          }
+
+          if (readString.indexOf("/ota/") != -1) {
+            OTA();
+            otaFlag = true;
+
+            response += "<!DOCTYPE HTML>\r\n";
+            response += "<html>\r\n";
+            response += "ESP8266 is now in OTA Mode. In this mode you can upload new firmware to the device.";
+            response += "</html>\n";
+            client.print(response);
+          }
+
+          client.flush();
+          client.stop();
+
+          readString = "";
+        }
+      }
+    }
+
+  }
+}
 
 int WiFiStart() {
   /*IPAddress ip(192,168,1,10); //fixed IP
   IPAddress gateway(192,168,1,1); //gateway (router) IP
-  IPAddress subnet(255,255,255,0); //subnet mask*/
-
-  //WiFi.config(ip, gateway, subnet);
+  IPAddress subnet(255,255,255,0); //subnet mask
+  WiFi.config(ip, gateway, subnet);*/
   WiFi.mode(WIFI_STA); //configure as wifi station
   WiFi.begin(ssid, password); //connect to network
 
@@ -81,9 +221,8 @@ int WiFiStart() {
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
   }
-  
+
   //Serial.println(WiFi.localIP()); //print IP address
-  server.begin(); //start server
 }
 
 int all_off() {
@@ -101,7 +240,7 @@ int smooth_hsv(int _state, int _hue, int _sat, int _lvl) {
   int temp_hue;
   int temp_sat;
   int temp_lvl;
-  
+
   if (_state == 0) { //off
     i_hue = 0;
     i_sat = 100;
@@ -191,7 +330,7 @@ int smooth_hsv(int _state, int _hue, int _sat, int _lvl) {
 
 int phys_switch() {
   io = digitalRead(d_input);
-  
+
   if (io != _io) {
     if (io == HIGH) {
       smooth_hsv(state, hue, sat, 0);
@@ -201,7 +340,7 @@ int phys_switch() {
       state = 1;
     }
   }
-  
+
   _io = io;
   delay(_delay);
 }
@@ -209,11 +348,11 @@ int phys_switch() {
 void hsv2rgb(float h, float s, float v) {
   int i;
   float f, p, q, t, _r, _g, _b;
-  
+
   h /= 360;
   s /= 100;
   v /= 100;
-  
+
   if (s == 0) { //Achromatic (grey)
     r = g = b = v;
     return;
@@ -224,7 +363,7 @@ void hsv2rgb(float h, float s, float v) {
   p = v * (1 - s);
   q = v * (1 - f * s);
   t = v * (1 - (1 - f) * s);
-  
+
   switch(i) {
     case 0:
       _r = v;
@@ -263,13 +402,30 @@ void hsv2rgb(float h, float s, float v) {
     b = round(_b*PWMRANGE);
 }
 
+void dht22() {
+  unsigned long current_ms = millis();
+
+  if (current_ms - prev_ms >= dht_interval) {
+    prev_ms = current_ms;
+
+    humidity = dht.readHumidity();
+    temp_c = dht.readTemperature(false); //celsius
+    temp_f = dht.readTemperature(true); //fahrenheit
+
+    if (isnan(humidity) || isnan(temp_c) || isnan(temp_f)) {return;}
+
+    float hic = dht.computeHeatIndex(temp_c, humidity, false); //celsius
+    float hif = dht.computeHeatIndex(temp_f, humidity, true); //fahrenheit
+  }
+}
+
 int OTA() {
   Serial.println("OTA");
-  
+
   /*ArduinoOTA.setPort(8266);
   ArduinoOTA.setHostname("ESP8266");
-  ArduinoOTA.setPassword((const char *)"123");*/
-  
+  ArduinoOTA.setPassword((const char *)"password");*/
+
   ArduinoOTA.onStart([]() {
     all_off();
   });
@@ -292,132 +448,4 @@ int OTA() {
     else if (error == OTA_END_ERROR) Serial.println("End Failed");
   });
   ArduinoOTA.begin();
-}
-
-void setup() {
-  state = 0;
-
-  //brightness
-  lvl = 0;
-  _delay = 5;
-
-  //color
-  hue = 0;
-  sat = 100;
-
-  //physical
-  _io = 0;
-  io = 0;
-
-  Serial.begin(115200);
-  pinMode(red, OUTPUT);
-  pinMode(green, OUTPUT);
-  pinMode(blue, OUTPUT);
-  pinMode(d_input, INPUT_PULLUP);
-
-  WiFiStart();
-  all_off();
-}
-
-void loop() {
-  if (otaFlag) {
-    ArduinoOTA.handle();
-  } else {
-    phys_switch();
-    
-    if (WiFi.status() != WL_CONNECTED) {WiFiStart();} //reconnect if lost
-    WiFiClient client = server.available(); //if client connected
-    
-    if (!client) {return;} //no client; restart loop
-    while (!client.available()) {delay(1);} //wait until client send data
-  
-    if (client) { //client found
-      while (client.connected()) {
-        
-        char c = client.read();
-        if (readString.length() < 100) {
-          readString += c;
-        }
-        //readString = client.readStringUntil('\r');
-  
-        if (c == '\n') {
-          //prepare response
-          /*client.println("HTTP/1.1 200 OK");
-          client.println("Content-Type: text/html");
-          client.println();
-          String response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<!DOCTYPE HTML>\r\n<html>\r\n";*/
-          String response;
-          response += "HTTP/1.1 200 OK\r\n";
-          response += "Content-Type: text/html\r\n\r\n";
-  
-          if (readString.indexOf("/off") != -1) {
-            if (state == 1) {
-              smooth_hsv(state, hue, sat, 0);
-              state = 0;
-            }
-            response += state;
-          }
-  
-          if (readString.indexOf("/on") > 0) {
-            if (lvl == 0) {lvl = PWMRANGE;}
-            smooth_hsv(state, hue, sat, lvl);
-            state = 1;
-            response += state;
-          }
-  
-          if (readString.indexOf("/lvl/") != -1) {
-            char charBuf[50];
-            readString.toCharArray(charBuf, 50);
-            lvl = atoi(strtok(charBuf, "GET /lvl/"));
-            smooth_hsv(state, hue, sat, lvl);
-
-            if (lvl != 0) {state = 1;}
-            else {state = 0;}
-            
-            response += lvl;
-          }
-
-          if (readString.indexOf("/hue/") != -1) {
-            char charBuf_hue[50];
-            readString.toCharArray(charBuf_hue, 50);
-            hue = atoi(strtok(charBuf_hue, "GET /hue/"));
-            smooth_hsv(state, hue, sat, lvl);
-            response += hue;
-          }
-
-          if (readString.indexOf("/sat/") != -1) {
-            char charBuf_sat[50];
-            readString.toCharArray(charBuf_sat, 50);
-            sat = atoi(strtok(charBuf_sat, "GET /sat/"));
-            smooth_hsv(state, hue, sat, lvl);
-            response += sat;
-          }
-  
-          if (readString.indexOf("/io_status/") != -1) {response += state;}
-          if (readString.indexOf("/lvl_status/") != -1) {response += lvl;}
-          if (readString.indexOf("/hue_status/") != -1) {response += hue;}
-          if (readString.indexOf("/sat_status/") != -1) {response += sat;}
-
-          if (readString.indexOf("/ota/") != -1) {
-            OTA();
-            otaFlag = true;
-
-            response += "<!DOCTYPE HTML>\r\n";
-            response += "<html>\r\n";
-            response += "ESP8266 is now in OTA Mode. In this mode you can upload new firmware to the device.";
-            response += "</html>\n";
-          }
-          
-          client.print(response);
-          
-          delay(1);
-          
-          client.flush();
-          client.stop();
-          
-          readString = "";
-        }
-      }
-    }
-  }
 }
