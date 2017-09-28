@@ -90,6 +90,9 @@ void setup() {
   pinMode(d_input, INPUT_PULLUP);
 
   mySwitch.enableTransmit(RF_transmitter);
+  /*mySwitch.setPulseLength(320);
+  mySwitch.setProtocol(2); //default = 1
+  mySwitch.setRepeatTransmit(15); //transmission repetitions*/
 
   WiFiStart();
   all_off();
