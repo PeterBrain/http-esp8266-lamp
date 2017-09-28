@@ -2,8 +2,8 @@
 * https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/examples/WiFiWebServer/WiFiWebServer.ino
 * 
 * Homebridge:
-* http://server_ip/off
-* http://server_ip/on
+* http://server_ip/lamp/off
+* http://server_ip/lamp/on
 * http://server_ip/io_status/
 * http://server_ip/lvl_status/
 * http://server_ip/lvl/
@@ -12,6 +12,9 @@
 * http://server_ip/sat/
 * http://server_ip/sat_status/
 * http://server_ip/dht/
+* http://server_ip/rf3/off
+* http://server_ip/rf3/on
+* http://server_ip/rf3/io_status/
 * 
 * OTA Update
 * http://server_ip/ota/
@@ -25,18 +28,21 @@
 #include <WiFiUdp.h> //for OTA
 #include <ArduinoOTA.h> //for OTA
 #include "DHT.h" //for DHT22
+#include <RCSwitch.h> //for RF Power Socket
 
 //global
 #define red 15 //D8 - Red channel
 #define green 12 //D6 - Green channel
 #define blue 13 //D7 - Blue channel
 #define d_input 5 //D1 - Physical Switch
-#define DHTpin 14 //D - DHT22 Humidity + Temperature Sensor
+#define DHTpin 14 //D5 - DHT22 Humidity + Temperature Sensor
+#define RF_transmitter 16 //D0 - RF 433MHz Transmitter
 #define PWMRANGE 1023 //ESP8266 -> maximum brightness
 
 DHT dht(DHTpin, DHT22); //pin, model
+RCSwitch mySwitch = RCSwitch();
 
-int state; //current state
+int state, rf3_state; //current state
 int _delay; //delay between brightness, hue & saturation steps
 int r, g, b; //output values
 
@@ -61,6 +67,7 @@ WiFiServer server(80); //server instance; listen port 80
 
 void setup() {
   state = 0;
+  rf3_state = 0;
   _delay = 5;
 
   //HSB
@@ -81,6 +88,8 @@ void setup() {
   pinMode(green, OUTPUT);
   pinMode(blue, OUTPUT);
   pinMode(d_input, INPUT_PULLUP);
+
+  mySwitch.enableTransmit(RF_transmitter);
 
   WiFiStart();
   all_off();
@@ -122,7 +131,7 @@ void loop() {
           json += "HTTP/1.1 200 OK\r\n";
           json += "Content-Type: application/json;charset=utf-8\r\n\r\n";
 
-          if (readString.indexOf("/off") != -1) {
+          if (readString.indexOf("/lamp/off") != -1) {
             if (state == 1) {
               smooth_hsv(state, hue, sat, 0);
               state = 0;
@@ -131,7 +140,7 @@ void loop() {
             client.print(response);
           }
 
-          if (readString.indexOf("/on") > 0) {
+          if (readString.indexOf("/lamp/on") > 0) {
             if (lvl == 0) {lvl = PWMRANGE;}
             smooth_hsv(state, hue, sat, lvl);
             state = 1;
@@ -174,6 +183,23 @@ void loop() {
           if (readString.indexOf("/lvl_status/") != -1) {response += lvl; client.print(response);}
           if (readString.indexOf("/hue_status/") != -1) {response += hue; client.print(response);}
           if (readString.indexOf("/sat_status/") != -1) {response += sat; client.print(response);}
+          if (readString.indexOf("/rf3/io_status/") != -1) {response += rf3_state; client.print(response);}
+
+          if (readString.indexOf("/rf3/on") != -1) {
+            int rf_code = 4117;
+            mySwitch.send(rf_code, 24);
+            rf3_state = 1;
+            response += rf_code;
+            client.print(response);
+          }
+
+          if (readString.indexOf("/rf3/off") != -1) {
+            int rf_code = 4116;
+            mySwitch.send(rf_code, 24);
+            rf3_state = 0;
+            response += rf_code;
+            client.print(response);
+          }
 
           if (readString.indexOf("/dht/") != -1) {
             dht22();
