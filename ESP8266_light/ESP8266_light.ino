@@ -1,6 +1,4 @@
 /*
-* https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/examples/WiFiWebServer/WiFiWebServer.ino
-*
 * Homebridge:
 * http://server_ip/lamp/off
 * http://server_ip/lamp/on
@@ -44,64 +42,78 @@
 /*
 * Global variables
 */
-#define PWMRANGE    1023 // ESP8266 -> maximum pwm value -> 10bit resolution
-#define RED_PIN     15   // D8 - Red channel
-#define GREEN_PIN   12   // D6 - Green channel
-#define BLUE_PIN    13   // D7 - Blue channel
-#define OTA_BUTTON  4    // D2 - Push Button
-#define D_INPUT     5    // D1 - Physical Switch
-#define DHT_PIN     14   // D5 - DHT22 Humidity + Temperature Sensor
-#define RF_TX       16   // D0 - RF 433MHz Transmitter
-#define EEPROM_SIZE 512  // Size in byte you want to use from EEPROM
-#define ADDR_STATE  0    // Address 0 in EEPROM
-#define ADDR_HUE    1    // Address 1 in EEPROM
-#define ADDR_SAT    2    // Address 2 in EEPROM
-#define ADDR_LVL    3    // Address 3 in EEPROM
+#define PWMRANGE     1023 // ESP8266 -> maximum pwm value -> 10bit resolution
+#define RED_PIN      15   // D8 - Red channel
+#define GREEN_PIN    12   // D6 - Green channel
+#define BLUE_PIN     13   // D7 - Blue channel
+#define DHT_PIN      14   // D5 - DHT22 Humidity + Temperature Sensor
+#define BUILTIN_LED  2    // D4 - bulitin LED
+#define FLASH_BUTTON 0    // D3 - Flash button
+#define OTA_BUTTON   4    // D2 - Push Button
+#define D_INPUT      5    // D1 - Physical Switch
+#define RF_TX        16   // D0 - RF 433MHz Transmitter
+#define LDR          A0   // ADC - Light dependent resistor (LDR), Photodiode
+#define EEPROM_SIZE  512  // Size in byte you want to use from EEPROM
+#define ADDR_STATE   0    // Address 0 in EEPROM
+#define ADDR_HUE     1    // Address 1 in EEPROM
+#define ADDR_SAT     2    // Address 2 in EEPROM
+#define ADDR_LVL     3    // Address 3 in EEPROM
 
-const char* ssid         = ""; // name of your wifi
-const char* password     = ""; // password for wifi
-const char* mdns_name    = ""; // mDNS name => <name>.local
-const char* ota_name     = ""; // ota username
-const char* ota_password = ""; // ota password
+const char* ssid       = ""; // name of your wifi
+const char* password   = ""; // password for wifi
+const char* mdns_name  = ""; // mDNS name => <name>.local
+const char* ota_name   = ""; // ota username
+const char* ota_passwd = ""; // ota password
 
 uint16_t server_port = 80;   // server port
 uint16_t ota_port    = 8266; // ota port - 8266?
 
-bool otaFlag = false; // ota enabled? - do not change this ever
-bool output_state, rf3_state; // current state on/off
+uint16_t rf1_code_on  = 21;    // RF1 on
+uint16_t rf1_code_off = 20;    // RF1 off
+uint16_t rf2_code_on  = 16405; // RF2 on
+uint16_t rf2_code_off = 16404; // RF2 off
+uint16_t rf3_code_on  = 4117;  // RF3 on
+uint16_t rf3_code_off = 4116;  // RF3 off
 
-int _delay; // delay between brightness, hue & saturation steps
+uint8_t fade_delay     = 4;     // delay between a change - 4ms - delay between brightness, hue & saturation steps
+uint32_t interval_dht  = 2000;  // DHT22 - 2s
+uint32_t interval_wifi = 10000; // WiFi - 10s
+uint32_t prev_ms_dht, prev_ms_wifi; // time vars (unsigned long)
+
+bool otaFlag = false; // ota enabled? - do not change this ever
+bool output_state, rf1_state, rf2_state, rf3_state; // current state on/off
+
 int phys_io_switch, _phys_io_switch; // physical - current, prev
 int ota_io_button, _ota_io_button; // ota button - current, prev
-int r, g, b; // output values
+int r_value, g_value, b_value; // output values
 int hue, i_hue, hue_direction; // color
 int sat, i_sat, sat_direction; // saturation
 int lvl, i_lvl, lvl_direction; // brightness
 
 String readRequest, response, jsonResponse;
-String endOfHeader = "\r\n\r\n";
 String newLine     = "\r\n";
+String endOfHeader = newLine + newLine;
+
+float humidity, temp_c, temp_f; // DHT
 
 DHT dht(DHT_PIN, DHT22); // pin, model
 RCSwitch mySwitch = RCSwitch();
 
-int rf3_code_on  = 4117; // RF3 on
-int rf3_code_off = 4116; // RF3 off
-float humidity, temp_c, temp_f; // DHT
-
-uint32_t prev_ms_dht, interval_dht, prev_ms_wifi, interval_wifi; // time vars (unsigned long)
-
 WiFiServer server(server_port); // server instance; listen port 80
 
 
+/*
+* init on startup
+*/
 void setup() {
   output_state = false;
+  rf1_state    = false;
+  rf2_state    = false;
   rf3_state    = false;
-  _delay       = 4; // delay between a change
 
   // HSB
   hue = 0;
-  sat = 100;
+  sat = 50;
   lvl = 0;
 
   // physical
@@ -112,17 +124,17 @@ void setup() {
 
   // time variables (DHT)
   prev_ms_dht   = 0;
-  interval_dht  = 2000; // DHT22 - 2s
   prev_ms_wifi  = 0;
-  interval_wifi = 10000; // WiFi - 10s
 
   Serial.begin(115200);
   pinMode(RED_PIN, OUTPUT);
   pinMode(GREEN_PIN, OUTPUT);
   pinMode(BLUE_PIN, OUTPUT);
+  pinMode(BUILTIN_LED, OUTPUT);
   pinMode(D_INPUT, INPUT_PULLUP);
   pinMode(OTA_BUTTON, INPUT_PULLUP);
 
+  digitalWrite(BUILTIN_LED, HIGH); // inverted - led off
   mySwitch.enableTransmit(RF_TX);
   /*mySwitch.setPulseLength(320);
   mySwitch.setProtocol(2); // default = 1
@@ -161,7 +173,11 @@ void loop() {
     ota_toggle();
     phys_switch();
 
-    if (WiFi.status() != WL_CONNECTED) {WiFiStart();} //while (WiFi.waitForConnectResult() != WL_CONNECTED) // reconnect if lost
+    if (WiFi.status() != WL_CONNECTED) { //while (WiFi.waitForConnectResult() != WL_CONNECTED) // reconnect if lost
+      digitalWrite(BUILTIN_LED, HIGH); // inverted - led off
+      WiFiStart();
+    } else {digitalWrite(BUILTIN_LED, LOW);} // inverted - led on
+
     WiFiClient client = server.available();
 
     if (!client) {return;} // no client; restart loop
@@ -187,7 +203,7 @@ void loop() {
 
     // request include "lamp"
     if (readRequest.indexOf("/lamp/") != -1) {
-      // request includes "/lamp/off" - turn lamp off
+      // turn lamp off
       if (readRequest.indexOf("/lamp/off") != -1) {
         if (output_state == true) {
           smooth_hsv(output_state, hue, sat, 0);
@@ -197,7 +213,7 @@ void loop() {
         client.print(response);
       }
 
-      // request includes "/lamp/on" - turn lamp on
+      // turn lamp on
       if (readRequest.indexOf("/lamp/on") != -1) {
         if (lvl == 0) {lvl = PWMRANGE;}
         smooth_hsv(output_state, hue, sat, lvl);
@@ -207,7 +223,7 @@ void loop() {
       }
     }
 
-    // request includes "/hue/" - hue value in degree
+    // hue value in degree (0-359)
     else if (readRequest.indexOf("/hue/") != -1) {
       char charBuf_hue[50];
       readRequest.toCharArray(charBuf_hue, 50);
@@ -217,7 +233,7 @@ void loop() {
       client.print(response);
     }
 
-    // request includes "/sat/" - saturation value from 0 to 100
+    // saturation value from 0 to 100
     else if (readRequest.indexOf("/sat/") != -1) {
       char charBuf_sat[50];
       readRequest.toCharArray(charBuf_sat, 50);
@@ -227,7 +243,7 @@ void loop() {
       client.print(response);
     }
 
-    // request includes "/lvl/" - brightness level
+    // brightness level
     else if (readRequest.indexOf("/lvl/") != -1) {
       char charBuf[50];
       readRequest.toCharArray(charBuf, 50);
@@ -246,11 +262,65 @@ void loop() {
     else if (readRequest.indexOf("/lvl_status/") != -1) {response += lvl; client.print(response);}
     else if (readRequest.indexOf("/hue_status/") != -1) {response += hue; client.print(response);}
     else if (readRequest.indexOf("/sat_status/") != -1) {response += sat; client.print(response);}
-    else if (readRequest.indexOf("/rf3/io_status/") != -1) {response += rf3_state; client.print(response);}
+
+    // request includes "/status/"
+    /*else if (readRequest.indexOf("/status/") != -1) {
+      // anything for status requests
+    }*/
+
+    // request includes "rf1"
+    else if (readRequest.indexOf("/rf1/") != -1) {
+      // turn on rf1
+      if (readRequest.indexOf("/rf1/on") != -1) {
+        mySwitch.send(rf1_code_on, 24);
+        rf1_state = true;
+        response += rf1_code_on;
+        client.print(response);
+      }
+
+      // switch off rf1
+      if (readRequest.indexOf("/rf1/off") != -1) {
+        mySwitch.send(rf1_code_off, 24);
+        rf1_state = false;
+        response += rf1_code_off;
+        client.print(response);
+      }
+
+      // rf1 status
+      if (readRequest.indexOf("/rf1/status/io/") != -1) {
+        response += rf1_state;
+        client.print(response);
+      }
+    }
+
+    // request includes "rf2"
+    else if (readRequest.indexOf("/rf2/") != -1) {
+      // turn on rf2
+      if (readRequest.indexOf("/rf2/on") != -1) {
+        mySwitch.send(rf2_code_on, 24);
+        rf2_state = true;
+        response += rf2_code_on;
+        client.print(response);
+      }
+
+      // turn off rf2
+      if (readRequest.indexOf("/rf2/off") != -1) {
+        mySwitch.send(rf2_code_off, 24);
+        rf2_state = false;
+        response += rf2_code_off;
+        client.print(response);
+      }
+
+      // rf2 status
+      if (readRequest.indexOf("/rf2/status/io/") != -1) {
+        response += rf2_state;
+        client.print(response);
+      }
+    }
 
     // request includes "rf3"
     else if (readRequest.indexOf("/rf3/") != -1) {
-      // request includes "/rf3/on" - turn rf switch on
+      // turn on rf3
       if (readRequest.indexOf("/rf3/on") != -1) {
         mySwitch.send(rf3_code_on, 24);
         rf3_state = true;
@@ -258,23 +328,29 @@ void loop() {
         client.print(response);
       }
 
-      // request includes "/rf3/off" - turn rf switch off
+      // turn off rf3
       if (readRequest.indexOf("/rf3/off") != -1) {
         mySwitch.send(rf3_code_off, 24);
         rf3_state = false;
         response += rf3_code_off;
         client.print(response);
       }
+
+      // rf3 status
+      if (readRequest.indexOf("/rf3/io_status/") != -1) {
+        response += rf3_state;
+        client.print(response);
+      }
     }
 
-    // request includes "/dht/" - reads temp & humidity + response in json
+    // read temp & humidity + response in json
     else if (readRequest.indexOf("/dht/") != -1) {
       dht22();
       jsonResponse += "{\"temperature\": " + String(temp_c) + ", \"humidity\": " + String(humidity) + "}";
       client.print(jsonResponse);
     }
 
-    // request includes "/ota/" - enables ota feature
+    // enable ota service
     else if (readRequest.indexOf("/ota/") != -1) {
       OTA();
       otaFlag = true;
@@ -286,7 +362,7 @@ void loop() {
       client.print(response);
     }
 
-    // request includes "/restart/" - to restart esp8266
+    // restart esp8266
     else if (readRequest.indexOf("/restart/") != -1) {
       response += "<!DOCTYPE HTML>" + newLine;
       response += "<html>" + newLine;
@@ -332,11 +408,12 @@ void WiFiStart() {
     prev_ms_wifi = current_ms;
     WiFi.begin(ssid, password); // connect to network
 
-  // When several wifi option are avaiable... take the strongest
-  /*wifiMulti.addAP("ssid_from_AP_1", "your_password_for_AP_1");
-  wifiMulti.addAP("ssid_from_AP_2", "your_password_for_AP_2");
-  wifiMulti.addAP("ssid_from_AP_3", "your_password_for_AP_3");*/
+    // When several wifi option are avaiable... take the strongest
+    /*wifiMulti.addAP("ssid_from_AP_1", "your_password_for_AP_1");
+    wifiMulti.addAP("ssid_from_AP_2", "your_password_for_AP_2");
+    wifiMulti.addAP("ssid_from_AP_3", "your_password_for_AP_3");*/
   }
+
   //Serial.println(WiFi.localIP()); // print IP address
 }
 
@@ -465,8 +542,8 @@ void smooth_hsv(bool _state, int _hue, int _sat, int _lvl) {
 
     // convert to rgb & output with a delay between changes
     hsv2rgb(i_hue, i_sat, i_lvl);
-    set_value(r, g, b);
-    delay(_delay);
+    set_value(r_value, g_value, b_value);
+    delay(fade_delay);
   }
 
   // save new before state
@@ -488,15 +565,16 @@ void phys_switch() {
   if (phys_io_switch != _phys_io_switch) {
     if (phys_io_switch == HIGH) {
       smooth_hsv(output_state, hue, sat, 0);
+      //mySwitch.send(rf2_code_off, 24);
       output_state = false;
     } else {
       smooth_hsv(output_state, hue, sat, 100);
+      //mySwitch.send(rf2_code_on, 24);
       output_state = true;
     }
   }
 
   _phys_io_switch = phys_io_switch; // new before state
-  //delay(_delay);
 }
 
 
@@ -506,11 +584,14 @@ void phys_switch() {
 void ota_toggle() {
   ota_io_button = digitalRead(OTA_BUTTON);
 
-  if (ota_io_button != _ota_io_button && ota_io_button == 1) { // toggle when input changed
-    otaFlag = !otaFlag;
+  if (ota_io_button != _ota_io_button && ota_io_button == 1) {
+    otaFlag = !otaFlag; // toggle when input changed
+    if (otaFlag) {OTA();} // start OTA service
   }
 
-  _ota_io_button = ota_io_button;
+  if (WiFi.status() != WL_CONNECTED) {otaFlag = false;} // disable OTA when not connected to wifi
+
+  _ota_io_button = ota_io_button; // new before state
 }
 
 
@@ -546,12 +627,8 @@ void dht22() {
 * handles ota call
 * restarts ESP after finishing
 */
-void OTA() {
-  Serial.println("OTA");
-
-  /*ArduinoOTA.setPort(ota_port);
-  ArduinoOTA.setHostname(ota_name);
-  ArduinoOTA.setPassword(ota_password); // (const char *)"password123"*/
+void OTA() {Serial.println("OTA enabled");
+ /*ArduinoOTA.setPort(ota_port); ArduinoOTA.setHostname(ota_name); ArduinoOTA.setPassword(ota_passwd); // (const char *)"password123"*/
 
   ArduinoOTA.onStart([]() {
     all_off();
@@ -589,14 +666,14 @@ void OTA() {
 */
 void hsv2rgb(float h, float s, float v) {
   int i;
-  float f, p, q, t, _r, _g, _b;
+  float f, p, q, t, _r_value, _g_value, _b_value;
 
   h /= 360; // hue
   s /= 100; // saturation
   v /= 100; // value or brightness
 
   if (s == 0) { // achromatic (grey)
-    r = g = b = v;
+    r_value = g_value = b_value = v;
     return;
   }
 
@@ -608,38 +685,38 @@ void hsv2rgb(float h, float s, float v) {
 
   switch(i) {
     case 0:
-      _r = v;
-      _g = t;
-      _b = p;
+      _r_value = v;
+      _g_value = t;
+      _b_value = p;
       break;
     case 1:
-      _r = q;
-      _g = v;
-      _b = p;
+      _r_value = q;
+      _g_value = v;
+      _b_value = p;
       break;
     case 2:
-      _r = p;
-      _g = v;
-      _b = t;
+      _r_value = p;
+      _g_value = v;
+      _b_value = t;
       break;
     case 3:
-      _r = p;
-      _g = q;
-      _b = v;
+      _r_value = p;
+      _g_value = q;
+      _b_value = v;
       break;
     case 4:
-      _r = t;
-      _g = p;
-      _b = v;
+      _r_value = t;
+      _g_value = p;
+      _b_value = v;
       break;
     case 5:
-      _r = v;
-      _g = p;
-      _b = q;
+      _r_value = v;
+      _g_value = p;
+      _b_value = q;
       break;
     }
 
-    r = round(_r * PWMRANGE);
-    g = round(_g * PWMRANGE);
-    b = round(_b * PWMRANGE);
+    r_value = round(_r_value * PWMRANGE);
+    g_value = round(_g_value * PWMRANGE);
+    b_value = round(_b_value * PWMRANGE);
 }
