@@ -2,17 +2,17 @@
 * Homebridge:
 * http://server_ip/lamp/off
 * http://server_ip/lamp/on
-* http://server_ip/io_status/
-* http://server_ip/lvl_status/
-* http://server_ip/lvl/
 * http://server_ip/hue/
-* http://server_ip/hue_status/
 * http://server_ip/sat/
-* http://server_ip/sat_status/
+* http://server_ip/lvl/
+* http://server_ip/lamp/status/io/
+* http://server_ip/lamp/status/hue/
+* http://server_ip/lamp/status/sat/
+* http://server_ip/lamp/status/lvl/
 * http://server_ip/dht/
-* http://server_ip/rf3/off
-* http://server_ip/rf3/on
-* http://server_ip/rf3/io_status/
+* http://server_ip/rf1/off
+* http://server_ip/rf2/on
+* http://server_ip/rf3/status/io/
 *
 * OTA Update
 * http://server_ip/ota/
@@ -75,30 +75,35 @@ uint16_t rf2_code_off = 16404; // RF2 off
 uint16_t rf3_code_on  = 4117;  // RF3 on
 uint16_t rf3_code_off = 4116;  // RF3 off
 
-uint8_t fade_delay     = 4;     // delay between a change - 4ms - delay between brightness, hue & saturation steps
-uint32_t interval_dht  = 2000;  // DHT22 - 2s
-uint32_t interval_wifi = 10000; // WiFi - 10s
-uint32_t prev_ms_dht, prev_ms_wifi; // time vars (unsigned long)
+uint8_t fade_delay       = 6;    // delay between a change - 6ms - delay between brightness, hue & saturation steps
+uint8_t ota_led_interval = 100;  // delay between status led off and on
+uint32_t interval_dht    = 2000; // DHT22 - 2s
+uint32_t prev_ms_dht; // time vars (unsigned long)
 
 bool otaFlag = false; // ota enabled? - do not change this ever
 bool output_state, rf1_state, rf2_state, rf3_state; // current state on/off
 
-int phys_io_switch, _phys_io_switch; // physical - current, prev
-int ota_io_button, _ota_io_button; // ota button - current, prev
-int r_value, g_value, b_value; // output values
-int hue, i_hue, hue_direction; // color
-int sat, i_sat, sat_direction; // saturation
-int lvl, i_lvl, lvl_direction; // brightness
+uint8_t phys_io_switch, _phys_io_switch; // physical - current, prev
+uint8_t ota_io_button, _ota_io_button; // ota button - current, prev
+uint16_t r_value, g_value, b_value; // output values
+uint16_t hue, i_hue, hue_direction; // color
+uint16_t sat, i_sat, sat_direction; // saturation
+uint16_t lvl, i_lvl, lvl_direction; // brightness
 
-String readRequest, response, jsonResponse;
-String newLine     = "\r\n";
-String endOfHeader = newLine + newLine;
+String http_header_content_html = "Content-Type: text/html"; // declares content as html
+String http_header_content_json = "Content-Type: application/json; charset=utf-8"; // defines content as json
+String newLine = "\r\n"; // carriage return & new line
 
 float humidity, temp_c, temp_f; // DHT
 
-DHT dht(DHT_PIN, DHT22); // pin, model
-RCSwitch mySwitch = RCSwitch();
+IPAddress ip      (192,168,1,10);  // fixed IP (0,0,0,0)
+IPAddress subnet  (255,255,255,0); // subnet mask
+IPAddress gateway (192,168,1,1);   // gateway (router) IP
+IPAddress dns1    (1,1,1,1);       // DNS server (Cloudflare)
+IPAddress dns2    (1,0,0,1);       // DNS server (Cloudflare)
 
+DHT dht(DHT_PIN, DHT22); // pin, model
+RCSwitch RF_Switch = RCSwitch(); // RF switch
 WiFiServer server(server_port); // server instance; listen port 80
 
 
@@ -106,41 +111,49 @@ WiFiServer server(server_port); // server instance; listen port 80
 * init on startup
 */
 void setup() {
-  output_state = false;
-  rf1_state    = false;
-  rf2_state    = false;
-  rf3_state    = false;
+  output_state = rf1_state = rf2_state = rf3_state = false;
 
-  // HSB
-  hue = 0;
-  sat = 50;
-  lvl = 0;
+  // init HSB values (if EEPROM empty)
+  hue = 300;
+  sat = 75;
+  lvl = 0; // light is always off after a restart (except eeprom works)
 
-  // physical
+  // init button values
   _phys_io_switch = 0; // do not change!
   phys_io_switch  = 0; // do not change!
   _ota_io_button  = 1; // do not change!
   ota_io_button   = 0; // do not change!
 
-  // time variables (DHT)
+  // time variables
   prev_ms_dht   = 0;
-  prev_ms_wifi  = 0;
 
   Serial.begin(115200);
+
   pinMode(RED_PIN, OUTPUT);
   pinMode(GREEN_PIN, OUTPUT);
   pinMode(BLUE_PIN, OUTPUT);
-  pinMode(BUILTIN_LED, OUTPUT);
-  pinMode(D_INPUT, INPUT_PULLUP);
-  pinMode(OTA_BUTTON, INPUT_PULLUP);
+  pinMode(BUILTIN_LED, OUTPUT); // inverted; HIGH - off; LOW - on
+  pinMode(D_INPUT, INPUT_PULLUP); // 1 - not pressed; 0 - pressed
+  pinMode(OTA_BUTTON, INPUT_PULLUP); // 1 - not pressed; 0 - pressed
 
   digitalWrite(BUILTIN_LED, HIGH); // inverted - led off
-  mySwitch.enableTransmit(RF_TX);
-  /*mySwitch.setPulseLength(320);
-  mySwitch.setProtocol(2); // default = 1
-  mySwitch.setRepeatTransmit(15); // transmission repetitions*/
 
-  WiFiStart();
+  RF_Switch.enableTransmit(RF_TX); // set RF pin
+  /*RF_Switch.setPulseLength(320);
+  RF_Switch.setProtocol(2); // default = 1
+  RF_Switch.setRepeatTransmit(15); // transmission repetitions*/
+
+  //WiFi.config(ip, gateway, subnet, dns1, dns2); // fixed ip and so on
+  WiFi.mode(WIFI_STA); // configure as wifi station - auto reconnect if lost
+  WiFi.begin(ssid, password); // connect to network - (ssid, password, channel, bssid, connect)
+
+  // When several wifi option are avaiable... take the strongest
+  /*wifiMulti.addAP("ssid_from_AP_1", "your_password_for_AP_1");
+  wifiMulti.addAP("ssid_from_AP_2", "your_password_for_AP_2");
+  wifiMulti.addAP("ssid_from_AP_3", "your_password_for_AP_3");*/
+
+  //Serial.println(WiFi.localIP()); // print IP address
+
   all_off();
 
   dht.begin();
@@ -150,13 +163,13 @@ void setup() {
     MDNS.begin(mdns_name); // mDNS responder for <hostname>.local
   }
 
-  EEPROM.begin(EEPROM_SIZE);
+  EEPROM.begin(EEPROM_SIZE); // define EEPROM size
 
-  // read EEPROM values - what if empty?
-  output_state = EEPROM.read(ADDR_STATE);
-  hue = EEPROM.read(ADDR_HUE);
-  sat = EEPROM.read(ADDR_SAT);
-  lvl = EEPROM.read(ADDR_LVL);
+  // read EEPROM values - what if empty? there seems to be an error
+  //output_state = EEPROM.read(ADDR_STATE);
+  //hue = EEPROM.read(ADDR_HUE);
+  //sat = EEPROM.read(ADDR_SAT);
+  //lvl = EEPROM.read(ADDR_LVL);
 
   /*Serial.println(hue, DEC);
   Serial-println(sat, DEC);
@@ -166,24 +179,19 @@ void setup() {
 
 
 void loop() {
+  WiFiClient client = server.available();
+
+  ota_toggle();
+  phys_switch();
+  wifi_status();
+
   if (otaFlag) {
-    ota_toggle();
     ArduinoOTA.handle();
-  } else {
-    ota_toggle();
-    phys_switch();
-
-    if (WiFi.status() != WL_CONNECTED) { //while (WiFi.waitForConnectResult() != WL_CONNECTED) // reconnect if lost
-      digitalWrite(BUILTIN_LED, HIGH); // inverted - led off
-      WiFiStart();
-    } else {digitalWrite(BUILTIN_LED, LOW);} // inverted - led on
-
-    WiFiClient client = server.available();
 
     if (!client) {return;} // no client; restart loop
-    //while (!client.available()) {delay(1);} // wait until client is available
 
     // read request
+    String readRequest;
     while (client.connected()) {
       if (client.available()) {
         char c = client.read(); // returns one character
@@ -193,13 +201,39 @@ void loop() {
       }
     }
 
-    // prepare response http/json
-    response += "HTTP/1.1 200 OK" + newLine;
-    response += "Content-Type: text/html" + newLine;
-    response += "Connection: close" + endOfHeader;
-    jsonResponse += "HTTP/1.1 200 OK" + newLine;
-    jsonResponse += "Content-Type: application/json; charset=utf-8" + newLine;
-    jsonResponse += "Connection: close" + endOfHeader;
+    // enable ota service
+    if (readRequest.indexOf("/ota") != -1) {
+      OTA();
+      otaFlag = false;
+      client.print(buildHeader(200, http_header_content_html, "Device is now in NORMAL Mode."));
+    }
+
+    // restart device
+    else if (readRequest.indexOf("/restart") != -1) {
+      client.print(buildHeader(200, http_header_content_html, "Device is now restarting."));
+      delay(1000);
+      ESP.restart();
+    }
+
+    // request does not match any of the locations
+    else {
+      client.print(buildHeader(404, http_header_content_html, "404 - Not Found"));
+      //client.stop(); // stops request and throws error in browser
+    }
+  } else {
+    if (!client) {return;} // no client; restart loop
+    //while (!client.available()) {delay(1);} // wait until client is available
+
+    // read request
+    String readRequest;
+    while (client.connected()) {
+      if (client.available()) {
+        char c = client.read(); // returns one character
+        readRequest += c; // adds new character to string
+        //readRequest += client.readStringUntil('\r'); // read from client until terminator + add to string
+        if (c == '\n') {break;} // new line marks end of request
+      }
+    }
 
     // request include "lamp"
     if (readRequest.indexOf("/lamp/") != -1) {
@@ -209,212 +243,205 @@ void loop() {
           smooth_hsv(output_state, hue, sat, 0);
           output_state = false;
         }
-        response += output_state;
-        client.print(response);
+        client.print(buildHeader(200, http_header_content_html, String(output_state)));
       }
 
       // turn lamp on
-      if (readRequest.indexOf("/lamp/on") != -1) {
+      else if (readRequest.indexOf("/lamp/on") != -1) {
         if (lvl == 0) {lvl = PWMRANGE;}
         smooth_hsv(output_state, hue, sat, lvl);
         output_state = true;
-        response += output_state;
-        client.print(response);
+        client.print(buildHeader(200, http_header_content_html, String(output_state)));
       }
+
+      // hue value in degree (0-359)
+      else if (readRequest.indexOf("/lamp/hue/") != -1) {
+        char charBuf_hue[50];
+        readRequest.toCharArray(charBuf_hue, 50);
+        hue = atoi(strtok(charBuf_hue, "GET /lamp/hue/"));
+        smooth_hsv(output_state, hue, sat, lvl);
+        client.print(buildHeader(200, http_header_content_html, String(hue)));
+      }
+
+      // saturation value from 0 to 100
+      else if (readRequest.indexOf("/lamp/sat/") != -1) {
+        char charBuf_sat[50];
+        readRequest.toCharArray(charBuf_sat, 50);
+        sat = atoi(strtok(charBuf_sat, "GET /lamp/sat/"));
+        smooth_hsv(output_state, hue, sat, lvl);
+        client.print(buildHeader(200, http_header_content_html, String(sat)));
+      }
+
+      // brightness level
+      else if (readRequest.indexOf("/lamp/lvl/") != -1) {
+        char charBuf[50];
+        readRequest.toCharArray(charBuf, 50);
+        lvl = atoi(strtok(charBuf, "GET /lamp/lvl/"));
+        smooth_hsv(output_state, hue, sat, lvl);
+
+        if (lvl != 0) {output_state = true;}
+        else {output_state = false;}
+
+        client.print(buildHeader(200, http_header_content_html, String(lvl)));
+      }
+
+      // request includes "/status/"
+      else if (readRequest.indexOf("/status/") != -1) {
+        if (readRequest.indexOf("/lamp/status/io/") != -1) {client.print(buildHeader(200, http_header_content_html, String(output_state)));}
+        else if (readRequest.indexOf("/lamp/status/hue/") != -1) {client.print(buildHeader(200, http_header_content_html, String(hue)));}
+        else if (readRequest.indexOf("/lamp/status/sat/") != -1) {client.print(buildHeader(200, http_header_content_html, String(sat)));}
+        else if (readRequest.indexOf("/lamp/status/lvl/") != -1) {client.print(buildHeader(200, http_header_content_html, String(lvl)));}
+      }
+
+      else {client.print(buildHeader(404, http_header_content_html, "404 - Not Found"));}
     }
-
-    // hue value in degree (0-359)
-    else if (readRequest.indexOf("/hue/") != -1) {
-      char charBuf_hue[50];
-      readRequest.toCharArray(charBuf_hue, 50);
-      hue = atoi(strtok(charBuf_hue, "GET /hue/"));
-      smooth_hsv(output_state, hue, sat, lvl);
-      response += hue;
-      client.print(response);
-    }
-
-    // saturation value from 0 to 100
-    else if (readRequest.indexOf("/sat/") != -1) {
-      char charBuf_sat[50];
-      readRequest.toCharArray(charBuf_sat, 50);
-      sat = atoi(strtok(charBuf_sat, "GET /sat/"));
-      smooth_hsv(output_state, hue, sat, lvl);
-      response += sat;
-      client.print(response);
-    }
-
-    // brightness level
-    else if (readRequest.indexOf("/lvl/") != -1) {
-      char charBuf[50];
-      readRequest.toCharArray(charBuf, 50);
-      lvl = atoi(strtok(charBuf, "GET /lvl/"));
-      smooth_hsv(output_state, hue, sat, lvl);
-
-      if (lvl != 0) {output_state = true;}
-      else {output_state = false;}
-
-      response += lvl;
-      client.print(response);
-    }
-
-    // status request
-    else if (readRequest.indexOf("/io_status/") != -1) {response += output_state; client.print(response);}
-    else if (readRequest.indexOf("/lvl_status/") != -1) {response += lvl; client.print(response);}
-    else if (readRequest.indexOf("/hue_status/") != -1) {response += hue; client.print(response);}
-    else if (readRequest.indexOf("/sat_status/") != -1) {response += sat; client.print(response);}
-
-    // request includes "/status/"
-    /*else if (readRequest.indexOf("/status/") != -1) {
-      // anything for status requests
-    }*/
 
     // request includes "rf1"
     else if (readRequest.indexOf("/rf1/") != -1) {
       // turn on rf1
       if (readRequest.indexOf("/rf1/on") != -1) {
-        mySwitch.send(rf1_code_on, 24);
+        RF_Switch.send(rf1_code_on, 24);
         rf1_state = true;
-        response += rf1_code_on;
-        client.print(response);
+        client.print(buildHeader(200, http_header_content_html, String(rf1_code_on)));
       }
 
       // switch off rf1
-      if (readRequest.indexOf("/rf1/off") != -1) {
-        mySwitch.send(rf1_code_off, 24);
+      else if (readRequest.indexOf("/rf1/off") != -1) {
+        RF_Switch.send(rf1_code_off, 24);
         rf1_state = false;
-        response += rf1_code_off;
-        client.print(response);
+        client.print(buildHeader(200, http_header_content_html, String(rf1_code_off)));
       }
 
       // rf1 status
-      if (readRequest.indexOf("/rf1/status/io/") != -1) {
-        response += rf1_state;
-        client.print(response);
-      }
+      else if (readRequest.indexOf("/rf1/status/io/") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf1_state)));}
     }
 
     // request includes "rf2"
     else if (readRequest.indexOf("/rf2/") != -1) {
       // turn on rf2
       if (readRequest.indexOf("/rf2/on") != -1) {
-        mySwitch.send(rf2_code_on, 24);
+        RF_Switch.send(rf2_code_on, 24);
         rf2_state = true;
-        response += rf2_code_on;
-        client.print(response);
+        client.print(buildHeader(200, http_header_content_html, String(rf2_code_on)));
       }
 
       // turn off rf2
-      if (readRequest.indexOf("/rf2/off") != -1) {
-        mySwitch.send(rf2_code_off, 24);
+      else if (readRequest.indexOf("/rf2/off") != -1) {
+        RF_Switch.send(rf2_code_off, 24);
         rf2_state = false;
-        response += rf2_code_off;
-        client.print(response);
+        client.print(buildHeader(200, http_header_content_html, String(rf2_code_off)));
       }
 
       // rf2 status
-      if (readRequest.indexOf("/rf2/status/io/") != -1) {
-        response += rf2_state;
-        client.print(response);
-      }
+      else if (readRequest.indexOf("/rf2/status/io/") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf2_state)));}
     }
 
     // request includes "rf3"
     else if (readRequest.indexOf("/rf3/") != -1) {
       // turn on rf3
       if (readRequest.indexOf("/rf3/on") != -1) {
-        mySwitch.send(rf3_code_on, 24);
+        RF_Switch.send(rf3_code_on, 24);
         rf3_state = true;
-        response += rf3_code_on;
-        client.print(response);
+        client.print(buildHeader(200, http_header_content_html, String(rf3_code_on)));
       }
 
       // turn off rf3
-      if (readRequest.indexOf("/rf3/off") != -1) {
-        mySwitch.send(rf3_code_off, 24);
+      else if (readRequest.indexOf("/rf3/off") != -1) {
+        RF_Switch.send(rf3_code_off, 24);
         rf3_state = false;
-        response += rf3_code_off;
-        client.print(response);
+        client.print(buildHeader(200, http_header_content_html, String(rf3_code_off)));
       }
 
       // rf3 status
-      if (readRequest.indexOf("/rf3/io_status/") != -1) {
-        response += rf3_state;
-        client.print(response);
-      }
+      else if (readRequest.indexOf("/rf3/io_status/") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf3_state)));}
     }
 
     // read temp & humidity + response in json
     else if (readRequest.indexOf("/dht/") != -1) {
       dht22();
-      jsonResponse += "{\"temperature\": " + String(temp_c) + ", \"humidity\": " + String(humidity) + "}";
-      client.print(jsonResponse);
+      String json_content = "{\"temperature\": " + String(temp_c) + ", \"humidity\": " + String(humidity) + "}";
+      client.print(buildHeader(200, http_header_content_json, json_content));
     }
 
     // enable ota service
-    else if (readRequest.indexOf("/ota/") != -1) {
+    else if (readRequest.indexOf("/ota") != -1) {
       OTA();
       otaFlag = true;
-
-      response += "<!DOCTYPE HTML>" + newLine;
-      response += "<html>" + newLine;
-      response += "ESP8266 is now in OTA Mode. In this mode you can upload new firmware to the device." + newLine;
-      response += "</html>\n";
-      client.print(response);
+      client.print(buildHeader(200, http_header_content_html, "Device is now in OTA Mode. In this mode you can upload new firmware to the device."));
     }
 
-    // restart esp8266
-    else if (readRequest.indexOf("/restart/") != -1) {
-      response += "<!DOCTYPE HTML>" + newLine;
-      response += "<html>" + newLine;
-      response += "ESP8266 is now restarting." + newLine;
-      response += "</html>\n";
-      client.print(response);
+    // restart device
+    else if (readRequest.indexOf("/restart") != -1) {
+      client.print(buildHeader(200, http_header_content_html, "Device is now restarting."));
+      delay(1000);
       ESP.restart();
     }
 
     // request does not match any of the locations
     else {
-      // header
-      response  = "HTTP/1.1 404 Not Found" + newLine;
-      response += "Content-Type: text/html" + newLine;
-      response += "Connection: close" + endOfHeader;
-      // body
-      response += "<!DOCTYPE HTML>" + newLine;
-      response += "<html>" + newLine;
-      response += "404 - Not found" + newLine;
-      response += "</html>\n";
-      client.print(response);
-      /*client.stop(); // stops request and throws error in browser*/
+      client.print(buildHeader(404, http_header_content_html, "404 - Not Found"));
+      //client.stop(); // stops request and throws error in browser
     }
 
     client.flush();
-    readRequest = response = jsonResponse = ""; // empty all strings
+    client.stop();
   }
 }
 
 
 /*
-* start wifi & connect
+* update builtin led for connectivity status
 */
-void WiFiStart() {
-  /*IPAddress ip(192,168,1,10); // fixed IP
-  IPAddress gateway(192,168,1,1); // gateway (router) IP
-  IPAddress subnet(255,255,255,0); // subnet mask
-  WiFi.config(ip, gateway, subnet);
-  WiFi.mode(WIFI_STA); // configure as wifi station*/
-  uint32_t current_ms = millis(); //unsigned long
+void wifi_status() {
+  if (!(WiFi.status() != WL_CONNECTED) && !otaFlag) { //while (WiFi.waitForConnectResult() != WL_CONNECTED) // reconnect if lost
+    digitalWrite(BUILTIN_LED, LOW); // inverted - led on
+  }
+  else if (!(WiFi.status() != WL_CONNECTED) && otaFlag) { // blink in ota mode
+    digitalWrite(BUILTIN_LED, !digitalRead(BUILTIN_LED));
+    delay(ota_led_interval);
+  }
+  else {digitalWrite(BUILTIN_LED, HIGH);} // inverted - led off
+}
 
-  if (current_ms - prev_ms_wifi >= interval_wifi) {
-    prev_ms_wifi = current_ms;
-    WiFi.begin(ssid, password); // connect to network
 
-    // When several wifi option are avaiable... take the strongest
-    /*wifiMulti.addAP("ssid_from_AP_1", "your_password_for_AP_1");
-    wifiMulti.addAP("ssid_from_AP_2", "your_password_for_AP_2");
-    wifiMulti.addAP("ssid_from_AP_3", "your_password_for_AP_3");*/
+/*
+* builds a response with parameters
+*/
+String buildHeader(
+  int http_header_code,
+  String http_header_content_type,
+  String http_body
+) {
+  String http_header_description;
+  String http_body_content;
+  String http_header_connection = "Connection: close";
+
+  switch(http_header_code) {
+    case 200: http_header_description = "OK"; break;
+    case 204: http_header_description = "No Content"; break;
+    case 301: http_header_description = "Moved Permanently"; break;
+    case 400: http_header_description = "Bad Request"; break;
+    case 403: http_header_description = "Forbidden"; break;
+    case 404: http_header_description = "Not Found"; break;
+    default:  http_header_description = ""; break;
   }
 
-  //Serial.println(WiFi.localIP()); // print IP address
+  if (http_header_content_type == http_header_content_html && http_header_code != 204) {
+    http_body_content = "<!DOCTYPE html>" + newLine;
+    http_body_content += "<html>" + newLine;
+    http_body_content += http_body + newLine;
+    http_body_content += "</html>" + newLine;
+  } else {
+    http_body_content = http_body;
+  }
+
+  String http_response = "HTTP/1.1" + String(' ') + String(http_header_code) + String(' ') + http_header_description + newLine;
+  http_response += "Content-Length: " + String(http_body_content.length()) + newLine;
+  http_response += http_header_content_type + newLine;
+  http_response += http_header_connection + newLine + newLine;
+  http_response += http_body_content;
+
+  return http_response;
 }
 
 
@@ -458,69 +485,34 @@ void write_to_eeprom() {
 * 2 - not changed
 */
 void smooth_hsv(bool _state, int _hue, int _sat, int _lvl) {
-  int temp_hue, temp_sat, temp_lvl;
-  int i_max; // largest difference
-
   if (_state == false) {i_lvl = 0;} // currently off -> switch on
 
   // check directions
-  if (i_hue > _hue) {temp_hue = i_hue - _hue;}
-  else if (i_hue < _hue) {temp_hue = _hue - i_hue;}
+  int temp_hue = (i_hue - _hue + 360) % 360; // modulo operation (start - destination + 360) mod 360)
 
-  if (i_hue == _hue) {
-    hue_direction = 2;
-    temp_hue = 0;
-  }
-  else if (temp_hue > 180) {hue_direction = 0;} // counter-clockwise
-  else if (temp_hue < 180) {hue_direction = 1;} // clockwise
+  if (i_hue == _hue) {hue_direction = 2;}
+  else if (temp_hue <= 180) {hue_direction = 0;} // counter-clockwise
+  else if (temp_hue  > 180) {hue_direction = 1;} // clockwise
 
-  if (i_sat > _sat) {
-    sat_direction = 0;
-    temp_sat = i_sat - _sat;
-  }
-  else if (i_sat < _sat) {
-    sat_direction = 1;
-    temp_sat = _sat - i_sat;
-  }
-  else {
-    sat_direction = 2;
-    temp_sat = 0;
-  }
+  if (i_sat > _sat) {sat_direction = 0;} // down
+  else if (i_sat < _sat) {sat_direction = 1;} // up
+  else {sat_direction = 2;}
 
-  if (i_lvl > _lvl) {
-    lvl_direction = 0;
-    temp_lvl = i_lvl - _lvl;
-  }
-  else if (i_lvl < _lvl) {
-    lvl_direction = 1;
-    temp_lvl = _lvl - i_lvl;
-  }
-  else {
-    lvl_direction = 2;
-    temp_lvl = 0;
-  }
-
-  // set maximum
-  if (temp_hue == 0 && temp_sat == 0 && temp_lvl == 0) {i_max = -1;}
-  else {
-    if (temp_hue >= temp_sat) {i_max = temp_hue;}
-    else {i_max = temp_sat;}
-
-    if (i_max >= temp_lvl) {i_max = i_max;}
-    else {i_max = temp_lvl;}
-  }
+  if (i_lvl > _lvl) {lvl_direction = 0;} // down
+  else if (i_lvl < _lvl) {lvl_direction = 1;} // up
+  else {lvl_direction = 2;}
 
   // smooth brightness change loop
-  for (int i_end = 0; i_end < i_max; i_end++) {
-
+  // continue until every direction is set to "not changed"
+  while (!(hue_direction == 2 && sat_direction == 2 && lvl_direction == 2)) {
     // decrease or increase
     if (hue_direction != 2) {
       if (hue_direction == 1) {
-        if (i_hue == 360) {i_hue = 0;}
+        if (i_hue == 360 && _hue != 360) {i_hue = -1;} // -1; otherwise it could result in a loop
         i_hue++;
       }
       else if (hue_direction == 0) {
-        if (i_hue == 0) {i_hue = 360;}
+        if (i_hue == 0 && _hue != 0) {i_hue = 361;} // 361; otherwise it could result in a loop
         i_hue--;
       }
     }
@@ -535,13 +527,18 @@ void smooth_hsv(bool _state, int _hue, int _sat, int _lvl) {
       else if (lvl_direction == 0) {i_lvl--;}
     }
 
-    // reached maximum? - set direction to "not changed"
-    if (i_lvl == _lvl) {lvl_direction = 2;}
+    // reached destination - set direction to "not changed"
     if (i_hue == _hue) {hue_direction = 2;}
     if (i_sat == _sat) {sat_direction = 2;}
+    if (i_lvl == _lvl) {lvl_direction = 2;}
+
+    // hue with 360 bugfix (hsv2rgb does not work with this value)
+    uint16_t temp_calc_hue;
+    if (i_hue == 360) {temp_calc_hue = 0;}
+    else {temp_calc_hue = i_hue;}
 
     // convert to rgb & output with a delay between changes
-    hsv2rgb(i_hue, i_sat, i_lvl);
+    hsv2rgb(temp_calc_hue, i_sat, i_lvl);
     set_value(r_value, g_value, b_value);
     delay(fade_delay);
   }
@@ -564,12 +561,12 @@ void phys_switch() {
 
   if (phys_io_switch != _phys_io_switch) {
     if (phys_io_switch == HIGH) {
-      smooth_hsv(output_state, hue, sat, 0);
-      //mySwitch.send(rf2_code_off, 24);
+      lvl = 0; // global state update
+      smooth_hsv(output_state, hue, sat, lvl);
       output_state = false;
     } else {
-      smooth_hsv(output_state, hue, sat, 100);
-      //mySwitch.send(rf2_code_on, 24);
+      lvl = 100; // global state update
+      smooth_hsv(output_state, hue, sat, lvl);
       output_state = true;
     }
   }
@@ -625,14 +622,15 @@ void dht22() {
 /*
 * OTA - Over the air update
 * handles ota call
-* restarts ESP after finishing
+* restart device after update
 */
-void OTA() {Serial.println("OTA enabled");
- /*ArduinoOTA.setPort(ota_port); ArduinoOTA.setHostname(ota_name); ArduinoOTA.setPassword(ota_passwd); // (const char *)"password123"*/
+void OTA() {
+  Serial.println("OTA enabled");
+  /*ArduinoOTA.setPort(ota_port);
+  ArduinoOTA.setHostname(ota_name);
+  ArduinoOTA.setPassword(ota_passwd); // (const char *)"password123"*/
 
-  ArduinoOTA.onStart([]() {
-    all_off();
-  });
+  ArduinoOTA.onStart([]() {all_off();});
 
   ArduinoOTA.onEnd([]() {
     all_off();
@@ -644,6 +642,8 @@ void OTA() {Serial.println("OTA enabled");
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
     all_off();
     Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+    /*hsv2rgb(hue, sat, (progress/(total/100))); // brightness goes up with percentage
+    set_value(r_value, g_value, b_value);*/
   });
 
   ArduinoOTA.onError([](ota_error_t error) {
