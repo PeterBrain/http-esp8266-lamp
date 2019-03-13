@@ -2,22 +2,25 @@
 * Homebridge:
 * http://server_ip/lamp/off
 * http://server_ip/lamp/on
-* http://server_ip/hue/
-* http://server_ip/sat/
-* http://server_ip/lvl/
-* http://server_ip/lamp/status/io/
-* http://server_ip/lamp/status/hue/
-* http://server_ip/lamp/status/sat/
-* http://server_ip/lamp/status/lvl/
-* http://server_ip/dht/
+* http://server_ip/lamp/hue/
+* http://server_ip/lamp/sat/
+* http://server_ip/lamp/lvl/
+* http://server_ip/lamp/status/io
+* http://server_ip/lamp/status/hue
+* http://server_ip/lamp/status/sat
+* http://server_ip/lamp/status/lvl
+*
+* http://server_ip/dht
+*
 * http://server_ip/rf1/off
 * http://server_ip/rf2/on
-* http://server_ip/rf3/status/io/
+* http://server_ip/rf3/status/io
+*
 *
 * OTA Update
 * http://server_ip/ota/
 *
-* To upload a new version of the sketch, browse http://server_ip/ota/ first...
+* To upload a new version of the sketch, call ( http://server_ip/ota/ | curl [-v] server_ip/ota ) first...
 * this will set the ESP8266 in OTA Mode
 */
 
@@ -76,7 +79,7 @@ uint16_t rf3_code_on  = 4117;  // RF3 on
 uint16_t rf3_code_off = 4116;  // RF3 off
 
 uint8_t fade_delay       = 6;    // delay between a change - 6ms - delay between brightness, hue & saturation steps
-uint8_t ota_led_interval = 100;  // delay between status led off and on
+uint8_t ota_led_interval = 100;  // delay between status led off and on (ota blinking)
 uint32_t interval_dht    = 2000; // DHT22 - 2s
 uint32_t prev_ms_dht; // time vars (unsigned long)
 
@@ -92,7 +95,8 @@ uint16_t lvl, i_lvl, lvl_direction; // brightness
 
 String http_header_content_html = "Content-Type: text/html"; // declares content as html
 String http_header_content_json = "Content-Type: application/json; charset=utf-8"; // defines content as json
-String newLine = "\r\n"; // carriage return & new line
+String page_not_found           = "404 - Not Found"; // text for error 404
+String newLine                  = "\r\n"; // carriage return & new line
 
 float humidity, temp_c, temp_f; // DHT
 
@@ -114,9 +118,9 @@ void setup() {
   output_state = rf1_state = rf2_state = rf3_state = false;
 
   // init HSB values (if EEPROM empty)
-  hue = 300;
+  hue = 330;
   sat = 75;
-  lvl = 0; // light is always off after a restart (except eeprom works)
+  lvl = 0; // light is always off after a restart (except eeprom values exist)
 
   // init button values
   _phys_io_switch = 0; // do not change!
@@ -125,7 +129,7 @@ void setup() {
   ota_io_button   = 0; // do not change!
 
   // time variables
-  prev_ms_dht   = 0;
+  prev_ms_dht = 0;
 
   Serial.begin(115200);
 
@@ -185,219 +189,192 @@ void loop() {
   phys_switch();
   wifi_status();
 
-  if (otaFlag) {
-    ArduinoOTA.handle();
+  if (otaFlag) {ArduinoOTA.handle();} // handle ota
 
-    if (!client) {return;} // no client; restart loop
+  if (!client) {return;} // no client; restart loop
+  //while (!client.available()) {delay(1);} // wait until client is available
 
-    // read request
-    String readRequest;
-    while (client.connected()) {
-      if (client.available()) {
-        char c = client.read(); // returns one character
-        readRequest += c; // adds new character to string
-        //readRequest += client.readStringUntil('\r'); // read from client until terminator + add to string
-        if (c == '\n') {break;} // new line marks end of request
-      }
+  // read request
+  String readRequest;
+  while (client.connected()) {
+    if (client.available()) {
+      char c = client.read(); // returns one character
+      readRequest += c; // adds new character to string
+      //readRequest += client.readStringUntil('\r'); // read from client until terminator + add to string
+      if (c == '\n') {break;} // new line marks end of request
     }
-
-    // enable ota service
-    if (readRequest.indexOf("/ota") != -1) {
-      OTA();
-      otaFlag = false;
-      client.print(buildHeader(200, http_header_content_html, "Device is now in NORMAL Mode."));
-    }
-
-    // restart device
-    else if (readRequest.indexOf("/restart") != -1) {
-      client.print(buildHeader(200, http_header_content_html, "Device is now restarting."));
-      delay(1000);
-      ESP.restart();
-    }
-
-    // request does not match any of the locations
-    else {
-      client.print(buildHeader(404, http_header_content_html, "404 - Not Found"));
-      //client.stop(); // stops request and throws error in browser
-    }
-  } else {
-    if (!client) {return;} // no client; restart loop
-    //while (!client.available()) {delay(1);} // wait until client is available
-
-    // read request
-    String readRequest;
-    while (client.connected()) {
-      if (client.available()) {
-        char c = client.read(); // returns one character
-        readRequest += c; // adds new character to string
-        //readRequest += client.readStringUntil('\r'); // read from client until terminator + add to string
-        if (c == '\n') {break;} // new line marks end of request
-      }
-    }
-
-    // request include "lamp"
-    if (readRequest.indexOf("/lamp/") != -1) {
-      // turn lamp off
-      if (readRequest.indexOf("/lamp/off") != -1) {
-        if (output_state == true) {
-          smooth_hsv(output_state, hue, sat, 0);
-          output_state = false;
-        }
-        client.print(buildHeader(200, http_header_content_html, String(output_state)));
-      }
-
-      // turn lamp on
-      else if (readRequest.indexOf("/lamp/on") != -1) {
-        if (lvl == 0) {lvl = PWMRANGE;}
-        smooth_hsv(output_state, hue, sat, lvl);
-        output_state = true;
-        client.print(buildHeader(200, http_header_content_html, String(output_state)));
-      }
-
-      // hue value in degree (0-359)
-      else if (readRequest.indexOf("/lamp/hue/") != -1) {
-        char charBuf_hue[50];
-        readRequest.toCharArray(charBuf_hue, 50);
-        hue = atoi(strtok(charBuf_hue, "GET /lamp/hue/"));
-        smooth_hsv(output_state, hue, sat, lvl);
-        client.print(buildHeader(200, http_header_content_html, String(hue)));
-      }
-
-      // saturation value from 0 to 100
-      else if (readRequest.indexOf("/lamp/sat/") != -1) {
-        char charBuf_sat[50];
-        readRequest.toCharArray(charBuf_sat, 50);
-        sat = atoi(strtok(charBuf_sat, "GET /lamp/sat/"));
-        smooth_hsv(output_state, hue, sat, lvl);
-        client.print(buildHeader(200, http_header_content_html, String(sat)));
-      }
-
-      // brightness level
-      else if (readRequest.indexOf("/lamp/lvl/") != -1) {
-        char charBuf[50];
-        readRequest.toCharArray(charBuf, 50);
-        lvl = atoi(strtok(charBuf, "GET /lamp/lvl/"));
-        smooth_hsv(output_state, hue, sat, lvl);
-
-        if (lvl != 0) {output_state = true;}
-        else {output_state = false;}
-
-        client.print(buildHeader(200, http_header_content_html, String(lvl)));
-      }
-
-      // request includes "/status/"
-      else if (readRequest.indexOf("/status/") != -1) {
-        if (readRequest.indexOf("/lamp/status/io/") != -1) {client.print(buildHeader(200, http_header_content_html, String(output_state)));}
-        else if (readRequest.indexOf("/lamp/status/hue/") != -1) {client.print(buildHeader(200, http_header_content_html, String(hue)));}
-        else if (readRequest.indexOf("/lamp/status/sat/") != -1) {client.print(buildHeader(200, http_header_content_html, String(sat)));}
-        else if (readRequest.indexOf("/lamp/status/lvl/") != -1) {client.print(buildHeader(200, http_header_content_html, String(lvl)));}
-      }
-
-      else {client.print(buildHeader(404, http_header_content_html, "404 - Not Found"));}
-    }
-
-    // request includes "rf1"
-    else if (readRequest.indexOf("/rf1/") != -1) {
-      // turn on rf1
-      if (readRequest.indexOf("/rf1/on") != -1) {
-        RF_Switch.send(rf1_code_on, 24);
-        rf1_state = true;
-        client.print(buildHeader(200, http_header_content_html, String(rf1_code_on)));
-      }
-
-      // switch off rf1
-      else if (readRequest.indexOf("/rf1/off") != -1) {
-        RF_Switch.send(rf1_code_off, 24);
-        rf1_state = false;
-        client.print(buildHeader(200, http_header_content_html, String(rf1_code_off)));
-      }
-
-      // rf1 status
-      else if (readRequest.indexOf("/rf1/status/io/") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf1_state)));}
-    }
-
-    // request includes "rf2"
-    else if (readRequest.indexOf("/rf2/") != -1) {
-      // turn on rf2
-      if (readRequest.indexOf("/rf2/on") != -1) {
-        RF_Switch.send(rf2_code_on, 24);
-        rf2_state = true;
-        client.print(buildHeader(200, http_header_content_html, String(rf2_code_on)));
-      }
-
-      // turn off rf2
-      else if (readRequest.indexOf("/rf2/off") != -1) {
-        RF_Switch.send(rf2_code_off, 24);
-        rf2_state = false;
-        client.print(buildHeader(200, http_header_content_html, String(rf2_code_off)));
-      }
-
-      // rf2 status
-      else if (readRequest.indexOf("/rf2/status/io/") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf2_state)));}
-    }
-
-    // request includes "rf3"
-    else if (readRequest.indexOf("/rf3/") != -1) {
-      // turn on rf3
-      if (readRequest.indexOf("/rf3/on") != -1) {
-        RF_Switch.send(rf3_code_on, 24);
-        rf3_state = true;
-        client.print(buildHeader(200, http_header_content_html, String(rf3_code_on)));
-      }
-
-      // turn off rf3
-      else if (readRequest.indexOf("/rf3/off") != -1) {
-        RF_Switch.send(rf3_code_off, 24);
-        rf3_state = false;
-        client.print(buildHeader(200, http_header_content_html, String(rf3_code_off)));
-      }
-
-      // rf3 status
-      else if (readRequest.indexOf("/rf3/io_status/") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf3_state)));}
-    }
-
-    // read temp & humidity + response in json
-    else if (readRequest.indexOf("/dht/") != -1) {
-      dht22();
-      String json_content = "{\"temperature\": " + String(temp_c) + ", \"humidity\": " + String(humidity) + "}";
-      client.print(buildHeader(200, http_header_content_json, json_content));
-    }
-
-    // enable ota service
-    else if (readRequest.indexOf("/ota") != -1) {
-      OTA();
-      otaFlag = true;
-      client.print(buildHeader(200, http_header_content_html, "Device is now in OTA Mode. In this mode you can upload new firmware to the device."));
-    }
-
-    // restart device
-    else if (readRequest.indexOf("/restart") != -1) {
-      client.print(buildHeader(200, http_header_content_html, "Device is now restarting."));
-      delay(1000);
-      ESP.restart();
-    }
-
-    // request does not match any of the locations
-    else {
-      client.print(buildHeader(404, http_header_content_html, "404 - Not Found"));
-      //client.stop(); // stops request and throws error in browser
-    }
-
-    client.flush();
-    client.stop();
   }
+
+  // lamp
+  if (readRequest.indexOf("/lamp/") != -1) {
+    // turn lamp off
+    if (readRequest.indexOf("/lamp/off") != -1) {
+      if (output_state == true) {
+        lvl = 0;
+        smooth_hsv(output_state, hue, sat, lvl);
+        output_state = false;
+      }
+      client.print(buildHeader(200, http_header_content_html, String(output_state)));
+    }
+
+    // turn lamp on
+    else if (readRequest.indexOf("/lamp/on") != -1) {
+      if (lvl == 0) {lvl = PWMRANGE;}
+      smooth_hsv(output_state, hue, sat, lvl);
+      output_state = true;
+      client.print(buildHeader(200, http_header_content_html, String(output_state)));
+    }
+
+    // hue value in degree (0-359)
+    else if (readRequest.indexOf("/lamp/hue/") != -1) {
+      char charBuf_hue[50];
+      readRequest.toCharArray(charBuf_hue, 50);
+      hue = atoi(strtok(charBuf_hue, "GET /lamp/hue/"));
+      smooth_hsv(output_state, hue, sat, lvl);
+      client.print(buildHeader(200, http_header_content_html, String(hue)));
+    }
+
+    // saturation value from 0 to 100
+    else if (readRequest.indexOf("/lamp/sat/") != -1) {
+      char charBuf_sat[50];
+      readRequest.toCharArray(charBuf_sat, 50);
+      sat = atoi(strtok(charBuf_sat, "GET /lamp/sat/"));
+      smooth_hsv(output_state, hue, sat, lvl);
+      client.print(buildHeader(200, http_header_content_html, String(sat)));
+    }
+
+    // brightness level
+    else if (readRequest.indexOf("/lamp/lvl/") != -1) {
+      char charBuf[50];
+      readRequest.toCharArray(charBuf, 50);
+      lvl = atoi(strtok(charBuf, "GET /lamp/lvl/"));
+      smooth_hsv(output_state, hue, sat, lvl);
+
+      if (lvl != 0) {output_state = true;}
+      else {output_state = false;}
+
+      client.print(buildHeader(200, http_header_content_html, String(lvl)));
+    }
+
+    // status
+    else if (readRequest.indexOf("/status/") != -1) {
+      if (readRequest.indexOf("/lamp/status/io") != -1) {client.print(buildHeader(200, http_header_content_html, String(output_state)));}
+      else if (readRequest.indexOf("/lamp/status/hue") != -1) {client.print(buildHeader(200, http_header_content_html, String(hue)));}
+      else if (readRequest.indexOf("/lamp/status/sat") != -1) {client.print(buildHeader(200, http_header_content_html, String(sat)));}
+      else if (readRequest.indexOf("/lamp/status/lvl") != -1) {client.print(buildHeader(200, http_header_content_html, String(lvl)));}
+      else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
+    }
+
+    else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
+  }
+
+  // rf1
+  else if (readRequest.indexOf("/rf1/") != -1) {
+    // turn on rf1
+    if (readRequest.indexOf("/rf1/on") != -1) {
+      RF_Switch.send(rf1_code_on, 24);
+      rf1_state = true;
+      client.print(buildHeader(200, http_header_content_html, String(rf1_code_on)));
+    }
+
+    // switch off rf1
+    else if (readRequest.indexOf("/rf1/off") != -1) {
+      RF_Switch.send(rf1_code_off, 24);
+      rf1_state = false;
+      client.print(buildHeader(200, http_header_content_html, String(rf1_code_off)));
+    }
+
+    // rf1 status
+    else if (readRequest.indexOf("/rf1/status/io") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf1_state)));}
+
+    else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
+  }
+
+  // rf2
+  else if (readRequest.indexOf("/rf2/") != -1) {
+    // turn on rf2
+    if (readRequest.indexOf("/rf2/on") != -1) {
+      RF_Switch.send(rf2_code_on, 24);
+      rf2_state = true;
+      client.print(buildHeader(200, http_header_content_html, String(rf2_code_on)));
+    }
+
+    // turn off rf2
+    else if (readRequest.indexOf("/rf2/off") != -1) {
+      RF_Switch.send(rf2_code_off, 24);
+      rf2_state = false;
+      client.print(buildHeader(200, http_header_content_html, String(rf2_code_off)));
+    }
+
+    // rf2 status
+    else if (readRequest.indexOf("/rf2/status/io") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf2_state)));}
+
+    else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
+  }
+
+  // rf3
+  else if (readRequest.indexOf("/rf3/") != -1) {
+    // turn on rf3
+    if (readRequest.indexOf("/rf3/on") != -1) {
+      RF_Switch.send(rf3_code_on, 24);
+      rf3_state = true;
+      client.print(buildHeader(200, http_header_content_html, String(rf3_code_on)));
+    }
+
+    // turn off rf3
+    else if (readRequest.indexOf("/rf3/off") != -1) {
+      RF_Switch.send(rf3_code_off, 24);
+      rf3_state = false;
+      client.print(buildHeader(200, http_header_content_html, String(rf3_code_off)));
+    }
+
+    // rf3 status
+    else if (readRequest.indexOf("/rf3/status/io") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf3_state)));}
+
+    else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
+  }
+
+  // read temp & humidity + response in json
+  else if (readRequest.indexOf("/dht") != -1) {
+    dht22();
+    String json_content = "{\"temperature\": " + String(temp_c) + ", \"humidity\": " + String(humidity) + "}";
+    client.print(buildHeader(200, http_header_content_json, json_content));
+  }
+
+  // enable ota service
+  else if (readRequest.indexOf("/ota") != -1) {
+    OTA();
+    otaFlag = true;
+    client.print(buildHeader(200, http_header_content_html, "Device is now in OTA Mode. In this mode you can upload new firmware to the device."));
+  }
+
+  // restart device
+  else if (readRequest.indexOf("/restart") != -1) {
+    client.print(buildHeader(200, http_header_content_html, "Device is now restarting."));
+    delay(1000); // time for response
+    ESP.restart();
+  }
+
+  // request does not match any of the locations
+  else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
+
+  client.flush();
+  client.stop(); // stops request and throws error in browser
 }
 
 
 /*
 * update builtin led for connectivity status
+* 1st - wifi connection            -> led is on
+* 2nd - wifi connection & ota mode -> led blinking
+* 3rd - no wifi connection         -> led is off
 */
 void wifi_status() {
   if (!(WiFi.status() != WL_CONNECTED) && !otaFlag) { //while (WiFi.waitForConnectResult() != WL_CONNECTED) // reconnect if lost
     digitalWrite(BUILTIN_LED, LOW); // inverted - led on
   }
-  else if (!(WiFi.status() != WL_CONNECTED) && otaFlag) { // blink in ota mode
-    digitalWrite(BUILTIN_LED, !digitalRead(BUILTIN_LED));
+  else if (!(WiFi.status() != WL_CONNECTED) && otaFlag) {
+    digitalWrite(BUILTIN_LED, !digitalRead(BUILTIN_LED)); // toggle
     delay(ota_led_interval);
   }
   else {digitalWrite(BUILTIN_LED, HIGH);} // inverted - led off
