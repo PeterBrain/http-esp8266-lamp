@@ -509,13 +509,8 @@ void smooth_hsv(bool _state, int _hue, int _sat, int _lvl) {
     if (i_sat == _sat) {sat_direction = 2;}
     if (i_lvl == _lvl) {lvl_direction = 2;}
 
-    // hue with 360 bugfix (hsv2rgb does not work with this value)
-    uint16_t temp_calc_hue;
-    if (i_hue == 360) {temp_calc_hue = 0;}
-    else {temp_calc_hue = i_hue;}
-
     // convert to rgb & output with a delay between changes
-    hsv2rgb(temp_calc_hue, i_sat, i_lvl);
+    hsv2rgb(i_hue, i_sat, i_lvl);
     set_value(r_value, g_value, b_value);
     delay(fade_delay);
   }
@@ -644,6 +639,8 @@ void OTA() {
 void hsv2rgb(float h, float s, float v) {
   int i;
   float f, p, q, t, _r_value, _g_value, _b_value;
+
+  if (h == 360) {h = 0;} // there is no case for i = 6
 
   h /= 360; // hue
   s /= 100; // saturation
