@@ -1,35 +1,14 @@
 /*
-* Homebridge:
-* http://server_ip/lamp/off
-* http://server_ip/lamp/on
-* http://server_ip/lamp/hue/
-* http://server_ip/lamp/sat/
-* http://server_ip/lamp/lvl/
-* http://server_ip/lamp/status/io
-* http://server_ip/lamp/status/hue
-* http://server_ip/lamp/status/sat
-* http://server_ip/lamp/status/lvl
-*
-* http://server_ip/dht
-*
-* http://server_ip/rf1/off
-* http://server_ip/rf2/on
-* http://server_ip/rf3/status/io
-*
-*
-* OTA Update
-* http://server_ip/ota/
-*
-* To upload a new version of the sketch, call ( http://server_ip/ota/ | curl [-v] server_ip/ota ) first...
-* this will set the ESP8266 in OTA Mode
+* HomeBridge HTTP esp8266 Light
 */
-
 
 /*
 * Libraries
 * <> => in library folder
 * "" => look in the sketch folder first
 */
+/*#include <stdio.h>
+#include <Arduino.h>*/
 #include <ESP8266WiFi.h>
 /*#include <ESP8266WiFiMulti.h>
 #include <WiFiUdp.h>
@@ -62,11 +41,11 @@
 #define ADDR_SAT     2    // Address 2 in EEPROM
 #define ADDR_LVL     3    // Address 3 in EEPROM
 
-const char* ssid       = ""; // name of your wifi
-const char* password   = ""; // password for wifi
-const char* mdns_name  = ""; // mDNS name => <name>.local
-const char* ota_name   = ""; // ota username
-const char* ota_passwd = ""; // ota password
+const char *ssid       = ""; // name of your wifi
+const char *password   = ""; // password for wifi
+const char *mdns_name  = ""; // mDNS name => <name>.local
+const char *ota_name   = ""; // ota username
+const char *ota_passwd = ""; // ota password
 
 uint16_t server_port = 80;   // server port
 uint16_t ota_port    = 8266; // ota port - 8266?
@@ -83,15 +62,12 @@ uint8_t ota_led_interval = 100;  // delay between status led off and on (ota bli
 uint32_t interval_dht    = 2000; // DHT22 - 2s
 uint32_t prev_ms_dht; // time vars (unsigned long)
 
-bool otaFlag = false; // ota enabled? - do not change this ever
-bool output_state, rf1_state, rf2_state, rf3_state; // current state on/off
+bool otaFlag, output_state, rf1_state, rf2_state, rf3_state;
 
 uint8_t phys_io_switch, _phys_io_switch; // physical - current, prev
 uint8_t ota_io_button, _ota_io_button; // ota button - current, prev
 uint16_t r_value, g_value, b_value; // output values
-uint16_t hue, i_hue, hue_direction; // color
-uint16_t sat, i_sat, sat_direction; // saturation
-uint16_t lvl, i_lvl, lvl_direction; // brightness
+uint16_t hue, sat, lvl; // color, saturation, brightness
 
 String http_header_content_html = "Content-Type: text/html"; // declares content as html
 String http_header_content_json = "Content-Type: application/json; charset=utf-8"; // defines content as json
@@ -115,7 +91,7 @@ WiFiServer server(server_port); // server instance; listen port 80
 * init on startup
 */
 void setup() {
-  output_state = rf1_state = rf2_state = rf3_state = false;
+  otaFlag = output_state = rf1_state = rf2_state = rf3_state = false;
 
   // init HSB values (if EEPROM empty)
   hue = 330;
@@ -163,22 +139,20 @@ void setup() {
   dht.begin();
   server.begin();
 
-  if (mdns_name != "") {
-    MDNS.begin(mdns_name); // mDNS responder for <hostname>.local
-  }
+  if (mdns_name != "") {MDNS.begin(mdns_name);} // mDNS responder for <hostname>.local
 
   EEPROM.begin(EEPROM_SIZE); // define EEPROM size
 
   // read EEPROM values - what if empty? there seems to be an error
-  //output_state = EEPROM.read(ADDR_STATE);
-  //hue = EEPROM.read(ADDR_HUE);
-  //sat = EEPROM.read(ADDR_SAT);
-  //lvl = EEPROM.read(ADDR_LVL);
+  output_state = EEPROM.read(ADDR_STATE);
+  hue = EEPROM.read(ADDR_HUE);
+  sat = EEPROM.read(ADDR_SAT);
+  lvl = EEPROM.read(ADDR_LVL);
 
-  /*Serial.println(hue, DEC);
+  /*Serial-println(output_state, bool);
+  Serial.println(hue, DEC);
   Serial-println(sat, DEC);
-  Serial.println(lvl, DEC);
-  Serial-println(output_state, bool);*/
+  Serial.println(lvl, DEC);*/
 }
 
 
@@ -212,7 +186,6 @@ void loop() {
       if (output_state == true) {
         lvl = 0;
         smooth_hsv(output_state, hue, sat, lvl);
-        output_state = false;
       }
       client.print(buildHeader(200, http_header_content_html, String(output_state)));
     }
@@ -221,7 +194,6 @@ void loop() {
     else if (readRequest.indexOf("/lamp/on") != -1) {
       if (lvl == 0) {lvl = PWMRANGE;}
       smooth_hsv(output_state, hue, sat, lvl);
-      output_state = true;
       client.print(buildHeader(200, http_header_content_html, String(output_state)));
     }
 
@@ -249,10 +221,6 @@ void loop() {
       readRequest.toCharArray(charBuf, 50);
       lvl = atoi(strtok(charBuf, "GET /lamp/lvl/"));
       smooth_hsv(output_state, hue, sat, lvl);
-
-      if (lvl != 0) {output_state = true;}
-      else {output_state = false;}
-
       client.print(buildHeader(200, http_header_content_html, String(lvl)));
     }
 
@@ -382,51 +350,11 @@ void wifi_status() {
 
 
 /*
-* builds a response with parameters
-*/
-String buildHeader(
-  int http_header_code,
-  String http_header_content_type,
-  String http_body
-) {
-  String http_header_description;
-  String http_body_content;
-  String http_header_connection = "Connection: close";
-
-  switch(http_header_code) {
-    case 200: http_header_description = "OK"; break;
-    case 204: http_header_description = "No Content"; break;
-    case 301: http_header_description = "Moved Permanently"; break;
-    case 400: http_header_description = "Bad Request"; break;
-    case 403: http_header_description = "Forbidden"; break;
-    case 404: http_header_description = "Not Found"; break;
-    default:  http_header_description = ""; break;
-  }
-
-  if (http_header_content_type == http_header_content_html && http_header_code != 204) {
-    http_body_content = "<!DOCTYPE html>" + newLine;
-    http_body_content += "<html>" + newLine;
-    http_body_content += http_body + newLine;
-    http_body_content += "</html>" + newLine;
-  } else {
-    http_body_content = http_body;
-  }
-
-  String http_response = "HTTP/1.1" + String(' ') + String(http_header_code) + String(' ') + http_header_description + newLine;
-  http_response += "Content-Length: " + String(http_body_content.length()) + newLine;
-  http_response += http_header_content_type + newLine;
-  http_response += http_header_connection + newLine + newLine;
-  http_response += http_body_content;
-
-  return http_response;
-}
-
-
-/*
 * immediately switch off all lights
 */
 void all_off() {
   output_state = false;
+  lvl = 0;
   set_value(0,0,0);
 }
 
@@ -455,6 +383,71 @@ void write_to_eeprom() {
 
 
 /*
+* check whether physical switch is toggled or not
+* does not indicate the same status twice in a row
+*/
+void phys_switch() {
+  phys_io_switch = digitalRead(D_INPUT);
+
+  if (phys_io_switch != _phys_io_switch) {
+    if (phys_io_switch == HIGH) {
+      lvl = 0;
+      smooth_hsv(output_state, hue, sat, lvl);
+    } else {
+      lvl = 100;
+      smooth_hsv(output_state, hue, sat, lvl);
+    }
+  }
+
+  _phys_io_switch = phys_io_switch; // new before state
+}
+
+
+/*
+* toggles OTA mode - via button on board
+*/
+void ota_toggle() {
+  ota_io_button = digitalRead(OTA_BUTTON);
+
+  if (ota_io_button != _ota_io_button && ota_io_button == 1) {
+    otaFlag = !otaFlag; // toggle when input changed
+    if (otaFlag) {OTA();} // start OTA service
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {otaFlag = false;} // disable OTA when not connected to wifi
+
+  _ota_io_button = ota_io_button; // new before state
+}
+
+
+/*
+* DHT22 read
+* prevent reading within a certain amount of time
+*/
+void dht22() {
+  uint32_t current_ms = millis(); //unsigned long
+
+  if (current_ms - prev_ms_dht >= interval_dht) {
+    prev_ms_dht = current_ms;
+
+    humidity = dht.readHumidity();
+    temp_c = dht.readTemperature(false); // celsius
+    temp_f = dht.readTemperature(true); // fahrenheit
+
+    if (isnan(humidity) || isnan(temp_c) || isnan(temp_f)) {
+      humidity = 0;
+      temp_c = 0;
+      temp_f = 0;
+      return;
+    }
+
+    float hic = dht.computeHeatIndex(temp_c, humidity, false); // celsius
+    float hif = dht.computeHeatIndex(temp_f, humidity, true); // fahrenheit
+  }
+}
+
+
+/*
 * Smooth transition to new color, saturation or brightness
 * direction:
 * 0 - down; counter-clockwise
@@ -462,7 +455,14 @@ void write_to_eeprom() {
 * 2 - not changed
 */
 void smooth_hsv(bool _state, int _hue, int _sat, int _lvl) {
-  if (_state == false) {i_lvl = 0;} // currently off -> switch on
+  uint16_t i_hue, i_sat, i_lvl; // iteration stores
+  uint8_t hue_direction, sat_direction, lvl_direction; // direction stores
+
+  i_hue = hue;
+  i_sat = sat;
+  i_lvl = lvl;
+
+  //if (_state == false) {lvl = 0;} // currently off -> switch on
 
   // check directions
   int temp_hue = (i_hue - _hue + 360) % 360; // modulo operation (start - destination + 360) mod 360)
@@ -516,78 +516,55 @@ void smooth_hsv(bool _state, int _hue, int _sat, int _lvl) {
   }
 
   // save new before state
-  _lvl = i_lvl;
-  _hue = i_hue;
-  _sat = i_sat;
+  lvl = i_lvl;
+  hue = i_hue;
+  sat = i_sat;
+
+  if (lvl == 0) {output_state = false;} // set global lamp io state
+  else {output_state = true;}
 
   write_to_eeprom(); // write after smooth transition
 }
 
 
 /*
-* check whether physical switch is toggled or not
-* does not indicate the same status twice in a row
+* builds a response with parameters
 */
-void phys_switch() {
-  phys_io_switch = digitalRead(D_INPUT);
+String buildHeader(
+  int http_header_code,
+  String http_header_content_type,
+  String http_body
+) {
+  String http_header_description;
+  String http_body_content;
+  String http_header_connection = "Connection: close";
 
-  if (phys_io_switch != _phys_io_switch) {
-    if (phys_io_switch == HIGH) {
-      lvl = 0; // global state update
-      smooth_hsv(output_state, hue, sat, lvl);
-      output_state = false;
-    } else {
-      lvl = 100; // global state update
-      smooth_hsv(output_state, hue, sat, lvl);
-      output_state = true;
-    }
+  switch(http_header_code) {
+    case 200: http_header_description = "OK"; break;
+    case 204: http_header_description = "No Content"; break;
+    case 301: http_header_description = "Moved Permanently"; break;
+    case 400: http_header_description = "Bad Request"; break;
+    case 403: http_header_description = "Forbidden"; break;
+    case 404: http_header_description = "Not Found"; break;
+    default:  http_header_description = ""; break;
   }
 
-  _phys_io_switch = phys_io_switch; // new before state
-}
-
-
-/*
-* toggles OTA mode - via button on board
-*/
-void ota_toggle() {
-  ota_io_button = digitalRead(OTA_BUTTON);
-
-  if (ota_io_button != _ota_io_button && ota_io_button == 1) {
-    otaFlag = !otaFlag; // toggle when input changed
-    if (otaFlag) {OTA();} // start OTA service
+  if (http_header_content_type == http_header_content_html && http_header_code != 204) {
+    http_body_content = "<!DOCTYPE html>" + newLine;
+    http_body_content += "<html>" + newLine;
+    http_body_content += http_body + newLine;
+    http_body_content += "</html>" + newLine;
+  } else {
+    http_body_content = http_body;
   }
 
-  if (WiFi.status() != WL_CONNECTED) {otaFlag = false;} // disable OTA when not connected to wifi
+  String http_response = "HTTP/1.1" + String(' ') + String(http_header_code) + String(' ') + http_header_description + newLine;
+  http_response += "Content-Length: " + String(http_body_content.length()) + newLine;
+  http_response += http_header_content_type + newLine;
+  http_response += http_header_connection + newLine + newLine;
+  http_response += http_body_content;
 
-  _ota_io_button = ota_io_button; // new before state
-}
-
-
-/*
-* DHT22 read
-* prevent reading within a certain amount of time
-*/
-void dht22() {
-  uint32_t current_ms = millis(); //unsigned long
-
-  if (current_ms - prev_ms_dht >= interval_dht) {
-    prev_ms_dht = current_ms;
-
-    humidity = dht.readHumidity();
-    temp_c = dht.readTemperature(false); // celsius
-    temp_f = dht.readTemperature(true); // fahrenheit
-
-    if (isnan(humidity) || isnan(temp_c) || isnan(temp_f)) {
-      humidity = 0;
-      temp_c = 0;
-      temp_f = 0;
-      return;
-    }
-
-    float hic = dht.computeHeatIndex(temp_c, humidity, false); // celsius
-    float hif = dht.computeHeatIndex(temp_f, humidity, true); // fahrenheit
-  }
+  return http_response;
 }
 
 

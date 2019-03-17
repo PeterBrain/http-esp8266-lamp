@@ -1,5 +1,5 @@
-# homebridge-http-esp8266-light
-HomeKit support for your not so smart lamp.
+# HomeBridge HTTP esp8266 Light
+> HomeKit support for your not so smart lamp.
 
 OK, thats not exactly true. With this, you won't gain any HomeKit functionality without any further steps, but it acts as an interface to [HomeBridge](https://github.com/nfarina/homebridge) ([official website](https://homebridge.io/)). I addition to homebridge, you need the extension [homebridge-http](https://github.com/PeterBrain/homebridge-http) and [homebridge-http-temperature-humidity](https://github.com/PeterBrain/homebridge-http-temperature-humidity).
 
@@ -11,6 +11,19 @@ OK, thats not exactly true. With this, you won't gain any HomeKit functionality 
 * ability to control RF devices
 * offline mode
 * wall switch support
+
+## Instructions
+**!Attention!**
+PINs of the device are mapped for WittyCloud. You have to change them for other devices.
+Don't forget to fill in your network SSID and password, otherwise it can't connect to it.
+
+### OTA Update
+Web browser: `http://server_ip/ota`
+
+Terminal: `curl [-v] server_ip/ota`
+
+To upload a new version of the sketch, call `http://server_ip/ota` via a Web browser or `curl [-v] server_ip/ota` in Terminal first...
+this will set the ESP8266 in OTA Mode
 
 ## Required hardware (what you need)
 * **esp8266 (-12F)** - I bought the WittyCloud from AliExpress, because I was too lazy to solder. I am sure the NodeMCU is supportet too, but you have to take care of the pin mapping
@@ -40,3 +53,44 @@ OK, thats not exactly true. With this, you won't gain any HomeKit functionality 
 The total will be higher if you don't have some parts laying around. Remember: AliExpress is your friend, but **don't** expect it to be delivered **within one month**.
 
 I made this documentation for myself, not because I need it, just because I was bored and had nothing else to do.
+
+### Homebridge URIs
+* http://<server_ip>/lamp/off
+* http://<server_ip>/lamp/on
+* http://<server_ip>/lamp/hue/
+* http://<server_ip>/lamp/sat/
+* http://<server_ip>/lamp/lvl/
+* http://<server_ip>/lamp/status/io
+* http://<server_ip>/lamp/status/hue
+* http://<server_ip>/lamp/status/sat
+* http://<server_ip>/lamp/status/lvl
+* http://<server_ip>/dht
+* http://<server_ip>/rf1/off
+* http://<server_ip>/rf2/on
+* http://<server_ip>/rf3/status/io
+
+## Todo
+Here are some ideas for leftover times in the future:
+* pure functions
+  * whenever possible
+* rf receiver
+  * receive command from rf remote
+* second lamp
+  * ability to control
+  * brightness, hue, saturation
+* mqtt
+  * better protocol for this application
+* web interface
+  * serial monitor
+    * debugging via webinterface
+  * general dashboard
+  * ota upload - SPIFFS
+* configuration
+  * external json file
+* daylight
+  * change light temperature during day
+* motion detector
+* alarm
+  * synchronize via ifttt
+* party mode
+  * flash
