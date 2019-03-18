@@ -7,18 +7,16 @@
 * <> => in library folder
 * "" => look in the sketch folder first
 */
-/*#include <stdio.h>
-#include <Arduino.h>*/
 #include <ESP8266WiFi.h>
 /*#include <ESP8266WiFiMulti.h>
 #include <WiFiUdp.h>
-#include <WiFiClient.h>
-#include <ESP8266WebServer.h>*/
+#include <WiFiClient.h>*/
 #include <ESP8266mDNS.h>
 #include <ArduinoOTA.h>
+#include <PubSubClient.h>
+#include <EEPROM.h>
 #include <DHT.h>
 #include <RCSwitch.h>
-#include <EEPROM.h>
 
 
 /*
@@ -41,14 +39,26 @@
 #define ADDR_SAT     2    // Address 2 in EEPROM
 #define ADDR_LVL     3    // Address 3 in EEPROM
 
-const char *ssid       = ""; // name of your wifi
-const char *password   = ""; // password for wifi
-const char *mdns_name  = ""; // mDNS name => <name>.local
-const char *ota_name   = ""; // ota username
-const char *ota_passwd = ""; // ota password
+#define MQTT_WILL_TOPIC   ""   // mqtt will topic
+#define MQTT_WILL_PAYLOAD "offline"   // mqtt will payload
+#define MQTT_WILL_QOS     1    // mqtt will QoS
+#define MQTT_WILL_RETAIN  true // mqtt will retain
+
+const char* wifi_ssid    = ""; // wifi name
+const char* wifi_passwd  = ""; // wifi password
+const char* mdns_name    = ""; // mDNS name => <name>.local
+const char* ota_name     = ""; // ota username
+const char* ota_passwd   = ""; // ota password
+const char* mqtt_server  = ""; // mqtt server ip or hostname
+const char* mqtt_id      = ""; // mqtt id for the client
+const char* mqtt_user    = ""; // mqtt username
+const char* mqtt_passwd  = ""; // mqtt password
+const char* mqtt_topic_0 = ""; // mqtt topic (device status)
+const char* mqtt_topic_1 = ""; // mqtt topic to subscribe to
 
 uint16_t server_port = 80;   // server port
-uint16_t ota_port    = 8266; // ota port - 8266?
+uint16_t ota_port    = 8266; // ota port
+uint16_t mqtt_port   = 1883; // mqtt port
 
 uint16_t rf1_code_on  = 21;    // RF1 on
 uint16_t rf1_code_off = 20;    // RF1 off
@@ -67,10 +77,11 @@ bool otaFlag, output_state, rf1_state, rf2_state, rf3_state;
 uint8_t phys_io_switch, _phys_io_switch; // physical - current, prev
 uint8_t ota_io_button, _ota_io_button; // ota button - current, prev
 uint16_t r_value, g_value, b_value; // output values
-uint16_t hue, sat, lvl; // color, saturation, brightness
+uint16_t hue, i_hue;
+uint8_t sat, i_sat, lvl, i_lvl;
 
-String http_header_content_html = "Content-Type: text/html"; // declares content as html
-String http_header_content_json = "Content-Type: application/json; charset=utf-8"; // defines content as json
+String http_header_content_html = "Content-Type: text/html"; // content = html
+String http_header_content_json = "Content-Type: application/json; charset=utf-8"; // content = json
 String page_not_found           = "404 - Not Found"; // text for error 404
 String newLine                  = "\r\n"; // carriage return & new line
 
@@ -85,6 +96,8 @@ IPAddress dns2    (1,0,0,1);       // DNS server (Cloudflare)
 DHT dht(DHT_PIN, DHT22); // pin, model
 RCSwitch RF_Switch = RCSwitch(); // RF switch
 WiFiServer server(server_port); // server instance; listen port 80
+WiFiClient client; // instantiate wifi client object
+PubSubClient MQTTclient(client); // instantiate mqtt client object
 
 
 /*
@@ -125,7 +138,7 @@ void setup() {
 
   //WiFi.config(ip, gateway, subnet, dns1, dns2); // fixed ip and so on
   WiFi.mode(WIFI_STA); // configure as wifi station - auto reconnect if lost
-  WiFi.begin(ssid, password); // connect to network - (ssid, password, channel, bssid, connect)
+  WiFi.begin(wifi_ssid, wifi_passwd); // connect to network - (ssid, password, channel, bssid, connect)
 
   // When several wifi option are avaiable... take the strongest
   /*wifiMulti.addAP("ssid_from_AP_1", "your_password_for_AP_1");
@@ -139,15 +152,20 @@ void setup() {
   dht.begin();
   server.begin();
 
+  MQTTclient.setServer(mqtt_server, mqtt_port);
+  MQTTclient.setCallback(mqtt_callback);
+
   if (mdns_name != "") {MDNS.begin(mdns_name);} // mDNS responder for <hostname>.local
 
   EEPROM.begin(EEPROM_SIZE); // define EEPROM size
 
   // read EEPROM values - what if empty? there seems to be an error
-  output_state = EEPROM.read(ADDR_STATE);
+  /*output_state = EEPROM.read(ADDR_STATE);
   hue = EEPROM.read(ADDR_HUE);
   sat = EEPROM.read(ADDR_SAT);
-  lvl = EEPROM.read(ADDR_LVL);
+  lvl = EEPROM.read(ADDR_LVL);*/
+
+  //if (output_state) {smooth_hsv(hue, sat, lvl);} // restore last state
 
   /*Serial-println(output_state, bool);
   Serial.println(hue, DEC);
@@ -157,13 +175,38 @@ void setup() {
 
 
 void loop() {
-  WiFiClient client = server.available();
-
   ota_toggle();
   phys_switch();
-  wifi_status();
 
-  if (otaFlag) {ArduinoOTA.handle();} // handle ota
+  if (!wifi_status()) {return;} // not connected to network; restart loop
+
+  if (otaFlag) {
+    MDNS.update();
+    ArduinoOTA.handle();
+  } // handle ota
+
+  if (!MQTTclient.connected()) { // not connected to mqtt server
+    //String clientId = "ESP8266Client-" + String(random(0xffff), HEX);
+    //if (MQTTclient.connect(clientId.c_str())) {
+
+    if (MQTTclient.connect(
+      mqtt_id,
+      mqtt_user,
+      mqtt_passwd,
+      MQTT_WILL_TOPIC,
+      MQTT_WILL_QOS,
+      MQTT_WILL_RETAIN,
+      MQTT_WILL_PAYLOAD
+    )) {
+      MQTTclient.publish(mqtt_topic_0, "online");
+      MQTTclient.subscribe(mqtt_topic_1);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(MQTTclient.state());
+    }
+  }
+
+  client = server.available();
 
   if (!client) {return;} // no client; restart loop
   //while (!client.available()) {delay(1);} // wait until client is available
@@ -185,15 +228,15 @@ void loop() {
     if (readRequest.indexOf("/lamp/off") != -1) {
       if (output_state == true) {
         lvl = 0;
-        smooth_hsv(output_state, hue, sat, lvl);
+        smooth_hsv(hue, sat, lvl);
       }
       client.print(buildHeader(200, http_header_content_html, String(output_state)));
     }
 
     // turn lamp on
     else if (readRequest.indexOf("/lamp/on") != -1) {
-      if (lvl == 0) {lvl = PWMRANGE;}
-      smooth_hsv(output_state, hue, sat, lvl);
+      if (lvl == 0) {lvl = 100;}
+      smooth_hsv(hue, sat, lvl);
       client.print(buildHeader(200, http_header_content_html, String(output_state)));
     }
 
@@ -202,7 +245,7 @@ void loop() {
       char charBuf_hue[50];
       readRequest.toCharArray(charBuf_hue, 50);
       hue = atoi(strtok(charBuf_hue, "GET /lamp/hue/"));
-      smooth_hsv(output_state, hue, sat, lvl);
+      smooth_hsv(hue, sat, lvl);
       client.print(buildHeader(200, http_header_content_html, String(hue)));
     }
 
@@ -211,7 +254,7 @@ void loop() {
       char charBuf_sat[50];
       readRequest.toCharArray(charBuf_sat, 50);
       sat = atoi(strtok(charBuf_sat, "GET /lamp/sat/"));
-      smooth_hsv(output_state, hue, sat, lvl);
+      smooth_hsv(hue, sat, lvl);
       client.print(buildHeader(200, http_header_content_html, String(sat)));
     }
 
@@ -219,8 +262,8 @@ void loop() {
     else if (readRequest.indexOf("/lamp/lvl/") != -1) {
       char charBuf[50];
       readRequest.toCharArray(charBuf, 50);
-      lvl = atoi(strtok(charBuf, "GET /lamp/lvl/"));
-      smooth_hsv(output_state, hue, sat, lvl);
+      lvl = atoi(strtok(charBuf, "GET /lamp/lvl/")); // strip down request
+      smooth_hsv(hue, sat, lvl);
       client.print(buildHeader(200, http_header_content_html, String(lvl)));
     }
 
@@ -305,8 +348,17 @@ void loop() {
   // read temp & humidity + response in json
   else if (readRequest.indexOf("/dht") != -1) {
     dht22();
-    String json_content = "{\"temperature\": " + String(temp_c) + ", \"humidity\": " + String(humidity) + "}";
+    String json_content = "{\"temperature\":" + String(temp_c) + ",\"humidity\":" + String(humidity) + "}";
     client.print(buildHeader(200, http_header_content_json, json_content));
+  }
+
+  else if (readRequest.indexOf("/eeprom") != -1) {
+    bool output_state_temp = EEPROM.read(ADDR_STATE);
+    uint16_t hue_temp = EEPROM.read(ADDR_HUE);
+    uint16_t sat_temp = EEPROM.read(ADDR_SAT);
+    uint16_t lvl_temp = EEPROM.read(ADDR_LVL);
+
+    client.print(buildHeader(200, http_header_content_html, "State: " + String(output_state_temp) + "<br>HUE: " + String(hue_temp) + "<br>SAT: " + String(sat_temp) + "<br>LVL: " + String(lvl_temp) + "<br><br>Should be:<br>State: " + String(output_state) + "<br>HUE: " + String(hue) + "<br>SAT: " + String(sat) + "<br>LVL: " + String(lvl)));
   }
 
   // enable ota service
@@ -314,6 +366,12 @@ void loop() {
     OTA();
     otaFlag = true;
     client.print(buildHeader(200, http_header_content_html, "Device is now in OTA Mode. In this mode you can upload new firmware to the device."));
+  }
+
+  // disable ota service
+  else if (readRequest.indexOf("/ota/false") != -1) {
+    otaFlag = false;
+    client.print(buildHeader(200, http_header_content_html, "Device is now in NORMAL Mode."));
   }
 
   // restart device
@@ -337,15 +395,21 @@ void loop() {
 * 2nd - wifi connection & ota mode -> led blinking
 * 3rd - no wifi connection         -> led is off
 */
-void wifi_status() {
+bool wifi_status() {
+  bool wifi_status = false;
+
   if (!(WiFi.status() != WL_CONNECTED) && !otaFlag) { //while (WiFi.waitForConnectResult() != WL_CONNECTED) // reconnect if lost
     digitalWrite(BUILTIN_LED, LOW); // inverted - led on
+    wifi_status = true;
   }
   else if (!(WiFi.status() != WL_CONNECTED) && otaFlag) {
     digitalWrite(BUILTIN_LED, !digitalRead(BUILTIN_LED)); // toggle
     delay(ota_led_interval);
+    wifi_status = true;
   }
   else {digitalWrite(BUILTIN_LED, HIGH);} // inverted - led off
+
+  return wifi_status;
 }
 
 
@@ -373,11 +437,11 @@ void set_value(int set_r, int set_g, int set_b) {
 * write values to eeprom
 */
 void write_to_eeprom() {
-  EEPROM.write(ADDR_STATE, output_state);
-  EEPROM.write(ADDR_HUE, hue);
-  EEPROM.write(ADDR_SAT, sat);
-  EEPROM.write(ADDR_LVL, lvl);
-  //EEPROM.commit(); // only commit
+  EEPROM.put(ADDR_STATE, output_state);
+  EEPROM.put(ADDR_HUE, hue);
+  EEPROM.put(ADDR_SAT, sat);
+  EEPROM.put(ADDR_LVL, lvl);
+  EEPROM.commit(); // only commit
   EEPROM.end(); // commit + release RAM of content
 }
 
@@ -392,11 +456,10 @@ void phys_switch() {
   if (phys_io_switch != _phys_io_switch) {
     if (phys_io_switch == HIGH) {
       lvl = 0;
-      smooth_hsv(output_state, hue, sat, lvl);
     } else {
       lvl = 100;
-      smooth_hsv(output_state, hue, sat, lvl);
     }
+    smooth_hsv(hue, sat, lvl);
   }
 
   _phys_io_switch = phys_io_switch; // new before state
@@ -448,24 +511,40 @@ void dht22() {
 
 
 /*
+* handle incoming mqtt message
+*/
+void mqtt_callback(char* topic, byte* payload, unsigned int length) {
+  /*Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+  }
+
+  Serial.println();
+
+  if ((char)payload[0] == '1') {
+    digitalWrite(BUILTIN_LED, LOW);
+  } else {
+    digitalWrite(BUILTIN_LED, HIGH);
+  }*/
+  return;
+}
+
+
+/*
 * Smooth transition to new color, saturation or brightness
 * direction:
 * 0 - down; counter-clockwise
 * 1 - up; clockwise
 * 2 - not changed
 */
-void smooth_hsv(bool _state, int _hue, int _sat, int _lvl) {
-  uint16_t i_hue, i_sat, i_lvl; // iteration stores
-  uint8_t hue_direction, sat_direction, lvl_direction; // direction stores
-
-  i_hue = hue;
-  i_sat = sat;
-  i_lvl = lvl;
-
-  //if (_state == false) {lvl = 0;} // currently off -> switch on
+bool smooth_hsv(int _hue, int _sat, int _lvl) {
+  uint8_t hue_direction, sat_direction, lvl_direction; // tmp direction stores
 
   // check directions
-  int temp_hue = (i_hue - _hue + 360) % 360; // modulo operation (start - destination + 360) mod 360)
+  uint8_t temp_hue = (i_hue - _hue + 360) % 360; // modulo operation (start - destination + 360) mod 360)
 
   if (i_hue == _hue) {hue_direction = 2;}
   else if (temp_hue <= 180) {hue_direction = 0;} // counter-clockwise
@@ -516,14 +595,16 @@ void smooth_hsv(bool _state, int _hue, int _sat, int _lvl) {
   }
 
   // save new before state
-  lvl = i_lvl;
   hue = i_hue;
   sat = i_sat;
+  lvl = i_lvl;
 
   if (lvl == 0) {output_state = false;} // set global lamp io state
   else {output_state = true;}
 
   write_to_eeprom(); // write after smooth transition
+
+  return output_state;
 }
 
 
@@ -579,7 +660,7 @@ void OTA() {
   ArduinoOTA.setHostname(ota_name);
   ArduinoOTA.setPassword(ota_passwd); // (const char *)"password123"*/
 
-  ArduinoOTA.onStart([]() {all_off();});
+  ArduinoOTA.onStart([]() {smooth_hsv(hue, sat, 0);});
 
   ArduinoOTA.onEnd([]() {
     all_off();

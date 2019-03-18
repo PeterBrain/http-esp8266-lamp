@@ -11,6 +11,7 @@ OK, thats not exactly true. With this, you won't gain any HomeKit functionality 
 * ability to control RF devices
 * offline mode
 * wall switch support
+* mqtt support (currently in testing)
 
 ## Instructions
 **!Attention!**
@@ -71,15 +72,11 @@ I made this documentation for myself, not because I need it, just because I was 
 
 ## Todo
 Here are some ideas for leftover times in the future:
-* pure functions
-  * whenever possible
 * rf receiver
   * receive command from rf remote
 * second lamp
   * ability to control
   * brightness, hue, saturation
-* mqtt
-  * better protocol for this application
 * web interface
   * serial monitor
     * debugging via webinterface
@@ -92,5 +89,4 @@ Here are some ideas for leftover times in the future:
 * motion detector
 * alarm
   * synchronize via ifttt
-* party mode
-  * flash
+* party mode (flash)
