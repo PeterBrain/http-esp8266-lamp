@@ -34,6 +34,7 @@
 #define RF_TX        16   // D0 - RF 433MHz Transmitter
 #define LDR          A0   // ADC - Light dependent resistor (LDR), Photodiode
 #define EEPROM_SIZE  512  // Size in byte you want to use from EEPROM
+
 #define ADDR_STATE   0    // Address 0 in EEPROM
 #define ADDR_HUE     1    // Address 1 in EEPROM
 #define ADDR_SAT     2    // Address 2 in EEPROM
@@ -77,15 +78,15 @@ bool otaFlag, output_state, rf1_state, rf2_state, rf3_state;
 uint8_t phys_io_switch, _phys_io_switch; // physical - current, prev
 uint8_t ota_io_button, _ota_io_button; // ota button - current, prev
 uint16_t r_value, g_value, b_value; // output values
-uint16_t hue, i_hue;
-uint8_t sat, i_sat, lvl, i_lvl;
+uint16_t hue, i_hue, sat, i_sat, lvl, i_lvl; // hue, saturation, brightness
+
+float r; // dimming curve factor
+float humidity, temp_c, temp_f; // DHT
 
 String http_header_content_html = "Content-Type: text/html"; // content = html
 String http_header_content_json = "Content-Type: application/json; charset=utf-8"; // content = json
 String page_not_found           = "404 - Not Found"; // text for error 404
 String newLine                  = "\r\n"; // carriage return & new line
-
-float humidity, temp_c, temp_f; // DHT
 
 IPAddress ip      (192,168,1,10);  // fixed IP (0,0,0,0)
 IPAddress subnet  (255,255,255,0); // subnet mask
@@ -145,7 +146,8 @@ void setup() {
   wifiMulti.addAP("ssid_from_AP_2", "your_password_for_AP_2");
   wifiMulti.addAP("ssid_from_AP_3", "your_password_for_AP_3");*/
 
-  //Serial.println(WiFi.localIP()); // print IP address
+  /*Serial.println(WiFi.localIP()); // print IP address
+  Serial.println(WiFi.macAddress()); // print MAC address*/
 
   all_off();
 
@@ -159,18 +161,20 @@ void setup() {
 
   EEPROM.begin(EEPROM_SIZE); // define EEPROM size
 
-  // read EEPROM values - what if empty? there seems to be an error
-  /*output_state = EEPROM.read(ADDR_STATE);
+  // read EEPROM values - what if empty?
+  output_state = EEPROM.read(ADDR_STATE);
   hue = EEPROM.read(ADDR_HUE);
   sat = EEPROM.read(ADDR_SAT);
-  lvl = EEPROM.read(ADDR_LVL);*/
-
-  //if (output_state) {smooth_hsv(hue, sat, lvl);} // restore last state
+  lvl = EEPROM.read(ADDR_LVL);
 
   /*Serial-println(output_state, bool);
   Serial.println(hue, DEC);
   Serial-println(sat, DEC);
   Serial.println(lvl, DEC);*/
+
+  if (output_state) {smooth_hsv(hue, sat, lvl);} // restore last state
+
+  r = (100 * log10(2)) / (log10(100)); // pwmSteps * log10(2) / log10(maxPWMrange)
 }
 
 
@@ -276,6 +280,20 @@ void loop() {
       else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
     }
 
+    // resolution testing 8-bit 0-255
+    else if (readRequest.indexOf("/lamp/test/255") != -1) {
+      lvl = 100;
+      set_value(255,255,255);
+      client.print(buildHeader(200, http_header_content_html, "Lamp was set to 100% with 8-bit resolution"));
+    }
+
+    // resolution testing 10-bit 0-1023
+    else if (readRequest.indexOf("/lamp/test/1023") != -1) {
+      lvl = 100;
+      set_value(PWMRANGE,PWMRANGE,PWMRANGE);
+      client.print(buildHeader(200, http_header_content_html, "Lamp was set to 100% with 10-bit resolution"));
+    }
+
     else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
   }
 
@@ -377,8 +395,34 @@ void loop() {
   // restart device
   else if (readRequest.indexOf("/restart") != -1) {
     client.print(buildHeader(200, http_header_content_html, "Device is now restarting."));
+    /*if (output_state == true) {
+      lvl = 0;
+      smooth_hsv(hue, sat, lvl);
+    }*/
     delay(1000); // time for response
     ESP.restart();
+  }
+
+  // print out everything
+  else if (readRequest.indexOf("/log") != -1) {
+    bool output_state_temp = EEPROM.read(ADDR_STATE);
+    uint16_t hue_temp = EEPROM.read(ADDR_HUE);
+    uint16_t sat_temp = EEPROM.read(ADDR_SAT);
+    uint16_t lvl_temp = EEPROM.read(ADDR_LVL);
+
+    String resp ="{";
+      resp += "\"Lamp\":{";
+        resp += "\"state\":" + String(output_state_temp) + ",\"hue\":" + String(hue_temp) + ",\"saturation\":" + String(sat_temp) + ",\"brightness\":" + String(lvl_temp) + ",";
+        resp += "\"expected\":{";
+          resp += "\"State\":" + String(output_state) + ",\"hue\":" + String(hue) + ",\"saturation\":" + String(sat) + ",\"brightness\":" + String(lvl);
+        resp += "},";
+        resp += "\"i_hue\":" + String(i_hue) + ",\"i_sat\":" + String(i_sat) + ",\"i_lvl\":" + String(i_lvl) + ",";
+        resp += "\"R\":" + String(r_value) + ",\"G\":" + String(g_value) + ",\"B\":" + String(b_value);
+      resp += "},";
+      resp += "\"OTA\":" + String(otaFlag);
+    resp += "}";
+
+    client.print(buildHeader(200, http_header_content_json, resp));
   }
 
   // request does not match any of the locations
@@ -442,7 +486,7 @@ void write_to_eeprom() {
   EEPROM.put(ADDR_SAT, sat);
   EEPROM.put(ADDR_LVL, lvl);
   EEPROM.commit(); // only commit
-  EEPROM.end(); // commit + release RAM of content
+  //EEPROM.end(); // commit + release RAM of content
 }
 
 
@@ -536,9 +580,9 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
 /*
 * Smooth transition to new color, saturation or brightness
 * direction:
-* 0 - down; counter-clockwise
+* 2 - down; counter-clockwise
 * 1 - up; clockwise
-* 2 - not changed
+* 0 - not changed; do nothing
 */
 bool smooth_hsv(int _hue, int _sat, int _lvl) {
   uint8_t hue_direction, sat_direction, lvl_direction; // tmp direction stores
@@ -546,50 +590,52 @@ bool smooth_hsv(int _hue, int _sat, int _lvl) {
   // check directions
   uint8_t temp_hue = (i_hue - _hue + 360) % 360; // modulo operation (start - destination + 360) mod 360)
 
-  if (i_hue == _hue) {hue_direction = 2;}
-  else if (temp_hue <= 180) {hue_direction = 0;} // counter-clockwise
+  if (i_hue == _hue) {hue_direction = 0;}
+  else if (temp_hue <= 180) {hue_direction = 2;} // counter-clockwise
   else if (temp_hue  > 180) {hue_direction = 1;} // clockwise
 
-  if (i_sat > _sat) {sat_direction = 0;} // down
+  if (i_sat > _sat) {sat_direction = 2;} // down
   else if (i_sat < _sat) {sat_direction = 1;} // up
-  else {sat_direction = 2;}
+  else {sat_direction = 0;}
 
-  if (i_lvl > _lvl) {lvl_direction = 0;} // down
+  if (i_lvl > _lvl) {lvl_direction = 2;} // down
   else if (i_lvl < _lvl) {lvl_direction = 1;} // up
-  else {lvl_direction = 2;}
+  else {lvl_direction = 0;}
 
   // smooth brightness change loop
   // continue until every direction is set to "not changed"
-  while (!(hue_direction == 2 && sat_direction == 2 && lvl_direction == 2)) {
+  while (!(hue_direction == 0 && sat_direction == 0 && lvl_direction == 0)) {
     // decrease or increase
-    if (hue_direction != 2) {
+    if (hue_direction != 0) {
       if (hue_direction == 1) {
         if (i_hue == 360 && _hue != 360) {i_hue = -1;} // -1; otherwise it could result in a loop
         i_hue++;
       }
-      else if (hue_direction == 0) {
+      else if (hue_direction == 2) {
         if (i_hue == 0 && _hue != 0) {i_hue = 361;} // 361; otherwise it could result in a loop
         i_hue--;
       }
     }
 
-    if (sat_direction != 2) {
+    if (sat_direction != 0) {
       if (sat_direction == 1) {i_sat++;}
-      else if (sat_direction == 0) {i_sat--;}
+      else if (sat_direction == 2) {i_sat--;}
     }
 
-    if (lvl_direction != 2) {
+    if (lvl_direction != 0) {
       if (lvl_direction == 1) {i_lvl++;}
-      else if (lvl_direction == 0) {i_lvl--;}
+      else if (lvl_direction == 2) {i_lvl--;}
     }
 
     // reached destination - set direction to "not changed"
-    if (i_hue == _hue) {hue_direction = 2;}
-    if (i_sat == _sat) {sat_direction = 2;}
-    if (i_lvl == _lvl) {lvl_direction = 2;}
+    if (i_hue == _hue) {hue_direction = 0;}
+    if (i_sat == _sat) {sat_direction = 0;}
+    if (i_lvl == _lvl) {lvl_direction = 0;}
+
+    float curve_lvl = pow(2, (i_lvl / r)) - 1; // dimming curve calculation
 
     // convert to rgb & output with a delay between changes
-    hsv2rgb(i_hue, i_sat, i_lvl);
+    hsv2rgb(i_hue, i_sat, curve_lvl);
     set_value(r_value, g_value, b_value);
     delay(fade_delay);
   }
@@ -699,53 +745,58 @@ void hsv2rgb(float h, float s, float v) {
   float f, p, q, t, _r_value, _g_value, _b_value;
 
   if (h == 360) {h = 0;} // there is no case for i = 6
+  /*else if (h <= 240 && h >= 120) {
+    h = 360 - (h - 240);
+  }
+  else if (h <= 0 && h <= 120) {
+    h = 360 + (h - 120);
+  }*/
 
   h /= 360; // hue
   s /= 100; // saturation
   v /= 100; // value or brightness
 
-  if (s == 0) { // achromatic (grey)
-    r_value = g_value = b_value = v;
-    return;
-  }
+  if (s == 0) {
+    _r_value = _g_value = _b_value = v; // achromatic (grey)
+  } else {
+    i = floor(h * 6);
+    f = h * 6 - i;
+    p = v * (1 - s);
+    q = v * (1 - f * s);
+    t = v * (1 - (1 - f) * s);
 
-  i = floor(h * 6);
-  f = h * 6 - i;
-  p = v * (1 - s);
-  q = v * (1 - f * s);
-  t = v * (1 - (1 - f) * s);
-
-  switch(i) {
-    case 0:
-      _r_value = v;
-      _g_value = t;
-      _b_value = p;
-      break;
-    case 1:
-      _r_value = q;
-      _g_value = v;
-      _b_value = p;
-      break;
-    case 2:
-      _r_value = p;
-      _g_value = v;
-      _b_value = t;
-      break;
-    case 3:
-      _r_value = p;
-      _g_value = q;
-      _b_value = v;
-      break;
-    case 4:
-      _r_value = t;
-      _g_value = p;
-      _b_value = v;
-      break;
-    case 5:
-      _r_value = v;
-      _g_value = p;
-      _b_value = q;
-      break;
+    switch(i) {
+      case 0:
+        _r_value = v;
+        _g_value = t;
+        _b_value = p;
+        break;
+      case 1:
+        _r_value = q;
+        _g_value = v;
+        _b_value = p;
+        break;
+      case 2:
+        _r_value = p;
+        _g_value = v;
+        _b_value = t;
+        break;
+      case 3:
+        _r_value = p;
+        _g_value = q;
+        _b_value = v;
+        break;
+      case 4:
+        _r_value = t;
+        _g_value = p;
+        _b_value = v;
+        break;
+      case 5:
+        _r_value = v;
+        _g_value = p;
+        _b_value = q;
+        break;
+      }
     }
 
     r_value = round(_r_value * PWMRANGE);

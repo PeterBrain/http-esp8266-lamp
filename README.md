@@ -12,6 +12,8 @@ OK, thats not exactly true. With this, you won't gain any HomeKit functionality 
 * offline mode
 * wall switch support
 * mqtt support (currently in testing)
+* dimming curve optimized
+* states and values in permanent memory
 
 ## Instructions
 **!Attention!**
