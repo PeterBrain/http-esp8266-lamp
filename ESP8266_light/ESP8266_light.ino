@@ -23,6 +23,7 @@
 * Global variables
 */
 #define PWMRANGE     1023 // ESP8266 -> maximum pwm value -> 10bit resolution
+#define PWMRANGE_N   255  // normal PWM range -> do not change this
 #define RED_PIN      15   // D8 - Red channel
 #define GREEN_PIN    12   // D6 - Green channel
 #define BLUE_PIN     13   // D7 - Blue channel
@@ -70,7 +71,7 @@ uint16_t rf3_code_off = 4116;  // RF3 off
 
 uint8_t fade_delay       = 6;    // delay between a change - 6ms - delay between brightness, hue & saturation steps
 uint8_t ota_led_interval = 100;  // delay between status led off and on (ota blinking)
-uint32_t interval_dht    = 2000; // DHT22 - 2s
+uint16_t interval_dht    = 2000; // DHT22 - 2s
 uint32_t prev_ms_dht; // time vars (unsigned long)
 
 bool otaFlag, output_state, rf1_state, rf2_state, rf3_state;
@@ -81,7 +82,7 @@ uint16_t r_value, g_value, b_value; // output values
 uint16_t hue, i_hue, sat, i_sat, lvl, i_lvl; // hue, saturation, brightness
 
 float r; // dimming curve factor
-float humidity, temp_c, temp_f; // DHT
+float humidity, temp_c, temp_f, hic, hif; // DHT
 
 String http_header_content_html = "Content-Type: text/html"; // content = html
 String http_header_content_json = "Content-Type: application/json; charset=utf-8"; // content = json
@@ -99,6 +100,7 @@ RCSwitch RF_Switch = RCSwitch(); // RF switch
 WiFiServer server(server_port); // server instance; listen port 80
 WiFiClient client; // instantiate wifi client object
 PubSubClient MQTTclient(client); // instantiate mqtt client object
+ADC_MODE(ADC_VCC); // reconfigure ADC for getVcc function
 
 
 /*
@@ -129,6 +131,7 @@ void setup() {
   pinMode(BUILTIN_LED, OUTPUT); // inverted; HIGH - off; LOW - on
   pinMode(D_INPUT, INPUT_PULLUP); // 1 - not pressed; 0 - pressed
   pinMode(OTA_BUTTON, INPUT_PULLUP); // 1 - not pressed; 0 - pressed
+  pinMode(LDR, INPUT); // LDR
 
   digitalWrite(BUILTIN_LED, HIGH); // inverted - led off
 
@@ -166,11 +169,6 @@ void setup() {
   hue = EEPROM.read(ADDR_HUE);
   sat = EEPROM.read(ADDR_SAT);
   lvl = EEPROM.read(ADDR_LVL);
-
-  /*Serial-println(output_state, bool);
-  Serial.println(hue, DEC);
-  Serial-println(sat, DEC);
-  Serial.println(lvl, DEC);*/
 
   if (output_state) {smooth_hsv(hue, sat, lvl);} // restore last state
 
@@ -370,15 +368,6 @@ void loop() {
     client.print(buildHeader(200, http_header_content_json, json_content));
   }
 
-  else if (readRequest.indexOf("/eeprom") != -1) {
-    bool output_state_temp = EEPROM.read(ADDR_STATE);
-    uint16_t hue_temp = EEPROM.read(ADDR_HUE);
-    uint16_t sat_temp = EEPROM.read(ADDR_SAT);
-    uint16_t lvl_temp = EEPROM.read(ADDR_LVL);
-
-    client.print(buildHeader(200, http_header_content_html, "State: " + String(output_state_temp) + "<br>HUE: " + String(hue_temp) + "<br>SAT: " + String(sat_temp) + "<br>LVL: " + String(lvl_temp) + "<br><br>Should be:<br>State: " + String(output_state) + "<br>HUE: " + String(hue) + "<br>SAT: " + String(sat) + "<br>LVL: " + String(lvl)));
-  }
-
   // enable ota service
   else if (readRequest.indexOf("/ota") != -1) {
     OTA();
@@ -405,24 +394,73 @@ void loop() {
 
   // print out everything
   else if (readRequest.indexOf("/log") != -1) {
-    bool output_state_temp = EEPROM.read(ADDR_STATE);
-    uint16_t hue_temp = EEPROM.read(ADDR_HUE);
-    uint16_t sat_temp = EEPROM.read(ADDR_SAT);
-    uint16_t lvl_temp = EEPROM.read(ADDR_LVL);
+    bool output_state_eeprom = EEPROM.read(ADDR_STATE);
+    uint16_t hue_eeprom = EEPROM.read(ADDR_HUE);
+    uint16_t sat_eeprom = EEPROM.read(ADDR_SAT);
+    uint16_t lvl_eeprom = EEPROM.read(ADDR_LVL);
+    float ldr = analogRead(LDR);
+
+    String resetReason = ESP.getResetReason(); // reset reason in human readable format
+    uint16_t vcc = ESP.getVcc(); // supply voltage
+    // heap
+    uint32_t freeHeap;
+    uint16_t maxFreeBlockSize;
+    uint8_t heapFragmentation;
+    ESP.getHeapStats(&freeHeap, &maxFreeBlockSize, &heapFragmentation);
+    /*uint32_t freeHeap = ESP.getFreeHeap(); // free heap size
+    uint16_t maxFreeBlockSize = ESP.getMaxFreeBlockSize(); // maximum allocatable ram block regarding heap fragmentation
+    uint8_t heapFragmentation = ESP.getHeapFragmentation(); // fragmentation metric (0% is clean, more than ~50% is not harmless)*/
+    // chip
+    uint32_t chipId = ESP.getChipId(); // ESP8266 chip ID
+    String coreVersion = ESP.getCoreVersion(); // core version
+    String sdkVersion = ESP.getSdkVersion(); // SDK version
+    uint8_t cpuFreq = ESP.getCpuFreqMHz(); // CPU frequency in MHz
+    uint32_t cycleCount = ESP.getCycleCount(); // cpu instruction cycle count since start
+    // sketch
+    uint32_t sketchSize = ESP.getSketchSize(); // size of the current sketch
+    uint32_t freeSketchSpace = ESP.getFreeSketchSpace(); // free sketch space
+    String md5_sketch = ESP.getSketchMD5(); // MD5 of the current sketch
+    // flash
+    uint32_t flashChipId = ESP.getFlashChipId(); // flash chip ID
+    uint32_t flashChipSizeIde = ESP.getFlashChipSize(); // flash chip size, in bytes, as seen by the SDK
+    uint32_t flashChipSizeReal = ESP.getFlashChipRealSize(); // real chip size, in bytes, based on the flash chip ID
+    uint32_t flashChipSpeed = ESP.getFlashChipSpeed(); // flash chip frequency, in Hz
+    FlashMode_t ideMode = ESP.getFlashChipMode(); // flash chip mode
+    String flashChipMode = (ideMode == FM_QIO ? "QIO" : ideMode == FM_QOUT ? "QOUT" : ideMode == FM_DIO ? "DIO" : ideMode == FM_DOUT ? "DOUT" : "UNKNOWN");
 
     String resp ="{";
-      resp += "\"Lamp\":{";
-        resp += "\"state\":" + String(output_state_temp) + ",\"hue\":" + String(hue_temp) + ",\"saturation\":" + String(sat_temp) + ",\"brightness\":" + String(lvl_temp) + ",";
-        resp += "\"expected\":{";
-          resp += "\"State\":" + String(output_state) + ",\"hue\":" + String(hue) + ",\"saturation\":" + String(sat) + ",\"brightness\":" + String(lvl);
-        resp += "},";
-        resp += "\"i_hue\":" + String(i_hue) + ",\"i_sat\":" + String(i_sat) + ",\"i_lvl\":" + String(i_lvl) + ",";
-        resp += "\"R\":" + String(r_value) + ",\"G\":" + String(g_value) + ",\"B\":" + String(b_value);
+      // global
+      resp += "\"global\":{\"ip\":\"" + String(WiFi.localIP().toString()) + "\",\"mac\":\"" + String(WiFi.macAddress()) + "\",\"wifi_station_hostname\":" + wifi_station_get_hostname() + "},";
+      // ota
+      resp += "\"ota\":{\"enabled\":" + boolString(otaFlag) + ",\"button\":" + boolString(ota_io_button) + "},";
+      // lamp
+      resp += "\"lamp\":{";
+        resp += "\"values\":{\"state\":" + boolString(output_state) + ",\"hue\":" + String(hue) + ",\"saturation\":" + String(sat) + ",\"brightness\":" + String(lvl) + "},";
+        resp += "\"eeprom\":{\"state\":" + boolString(output_state_eeprom) + ",\"hue\":" + String(hue_eeprom) + ",\"saturation\":" + String(sat_eeprom) + ",\"brightness\":" + String(lvl_eeprom) + "},";
+        resp += "\"fade_values\":{\"i_hue\":" + String(i_hue) + ",\"i_sat\":" + String(i_sat) + ",\"i_lvl\":" + String(i_lvl) + "},";
+
+        resp += "\"output\":{";
+          resp += "\"values\":{\"r\":" + String(r_value) + ",\"g\":" + String(g_value) + ",\"b\":" + String(b_value) + "},";
+          resp += "\"normalized\":{\"r\":" + String(r_value * PWMRANGE_N / PWMRANGE) + ",\"g\":" + String(g_value * PWMRANGE_N / PWMRANGE) + ",\"b\":" + String(b_value * PWMRANGE_N / PWMRANGE) + "},";
+          resp += "\"hex_color\":\"#" + String(rgb2hex(r_value, g_value, b_value)) + "\"";
+        resp += "}";
       resp += "},";
-      resp += "\"OTA\":" + String(otaFlag);
+      // rf
+      resp += "\"rf\":{\"rf1\":" + boolString(rf1_state) + ",\"rf2\":" + boolString(rf2_state) + ",\"rf3\":" + boolString(rf3_state) + "},";
+      // dht
+      resp += "\"dht\":{";
+        resp += "\"temperature\":{\"celsius\":" + String(temp_c) + ",\"farenheit\":" + String(temp_f) + "},";
+        resp += "\"humidity\":{\"measured\":" + String(humidity) + ",\"heat_index\":{\"celsius\":" + String(hic) + ",\"farenheit\":" + String(hif) + "}}";
+      resp += "},";
+      // other
+      resp += "\"wall_switch\":" + boolString(phys_io_switch) + ",";
+      resp += "\"ldr\":" + String(ldr) + ",";
+      resp += "\"r\":" + String(r) + ",";
+      // esp api
+      resp += "\"esp\":{\"chip_id\":" + String(chipId) + ",\"cpu_frequency\":" + String(cpuFreq) + ",\"core_version\":\"" + coreVersion + "\",\"cycle_count\":" + String(cycleCount) + ",\"free_heap\":" + String(freeHeap) + ",\"max_free_heap\":" + String(maxFreeBlockSize) + ",\"heap_fragmentation\":" + String(heapFragmentation) + ",\"reset_reason\":\"" + resetReason + "\",\"vcc\":" + String(vcc) + ",\"sketch\":{\"md5_of_sketch\":\"" + md5_sketch + "\",\"sketch_size\":" + String(sketchSize) + ",\"free_sketch_space\":" + String(freeSketchSpace) + "},\"flash\":{\"flash_chip_id\":" + String(flashChipId) + ",\"flash_chip_speed\":" + String(flashChipSpeed) + ",\"flash_chip_size_ide\":" + String(flashChipSizeIde) + ",\"flash_chip_size_real\":" + String(flashChipSizeReal) + ",\"flash_chip_mode\":\"" + flashChipMode + "\"}}";
     resp += "}";
 
-    client.print(buildHeader(200, http_header_content_json, resp));
+    client.print(buildHeader(200, http_header_content_json, stringifyLogJson()));
   }
 
   // request does not match any of the locations
@@ -542,14 +580,14 @@ void dht22() {
     temp_f = dht.readTemperature(true); // fahrenheit
 
     if (isnan(humidity) || isnan(temp_c) || isnan(temp_f)) {
-      humidity = 0;
-      temp_c = 0;
-      temp_f = 0;
+      humidity = -1;
+      temp_c = -273.15;
+      temp_f = -273.15;
       return;
     }
 
-    float hic = dht.computeHeatIndex(temp_c, humidity, false); // celsius
-    float hif = dht.computeHeatIndex(temp_f, humidity, true); // fahrenheit
+    hic = dht.computeHeatIndex(temp_c, humidity, false); // celsius
+    hif = dht.computeHeatIndex(temp_f, humidity, true); // fahrenheit
   }
 }
 
@@ -737,6 +775,12 @@ void OTA() {
 
 
 /*
+* cast boolean value to a string -> true or false
+*/
+String boolString(bool _bool) {return _bool ? "true" : "false";}
+
+
+/*
 * convert hsv values to rgb
 * output values multiplied by PWMRANGE
 */
@@ -802,4 +846,16 @@ void hsv2rgb(float h, float s, float v) {
     r_value = round(_r_value * PWMRANGE);
     g_value = round(_g_value * PWMRANGE);
     b_value = round(_b_value * PWMRANGE);
+}
+
+
+/*
+* convert 3 8-bit int rgb values into String (hex color code)
+*/
+String rgb2hex(uint16_t _r_value, uint16_t _g_value, uint8_t _b_value) {
+  uint8_t r_norm = _r_value * PWMRANGE_N / PWMRANGE;
+  uint8_t g_norm = _g_value * PWMRANGE_N / PWMRANGE;
+  uint8_t b_norm = _b_value * PWMRANGE_N / PWMRANGE;
+  uint32_t hex_color = (r_norm << 16) | (g_norm << 8) | b_norm;
+  return String(hex_color, HEX);
 }
