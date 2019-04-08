@@ -13,6 +13,7 @@
 #include <WiFiClient.h>*/
 #include <ESP8266mDNS.h>
 #include <ArduinoOTA.h>
+#include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include <EEPROM.h>
 #include <DHT.h>
@@ -37,9 +38,10 @@
 #define EEPROM_SIZE  512  // Size in byte you want to use from EEPROM
 
 #define ADDR_STATE   0    // Address 0 in EEPROM
-#define ADDR_HUE     1    // Address 1 in EEPROM
-#define ADDR_SAT     2    // Address 2 in EEPROM
-#define ADDR_LVL     3    // Address 3 in EEPROM
+#define ADDR_HUE_1   1    // Address 1 in EEPROM
+#define ADDR_HUE_2   2    // Address 2 in EEPROM
+#define ADDR_SAT     3    // Address 3 in EEPROM
+#define ADDR_LVL     4    // Address 4 in EEPROM
 
 #define MQTT_WILL_TOPIC   ""   // mqtt will topic
 #define MQTT_WILL_PAYLOAD "offline"   // mqtt will payload
@@ -109,10 +111,10 @@ ADC_MODE(ADC_VCC); // reconfigure ADC for getVcc function
 void setup() {
   otaFlag = output_state = rf1_state = rf2_state = rf3_state = false;
 
-  // init HSB values (if EEPROM empty)
+  // init HSB values
   hue = 330;
   sat = 75;
-  lvl = 0; // light is always off after a restart (except eeprom values exist)
+  lvl = 0; // light is always off after a restart (except eeprom values tells otherwise)
 
   // init button values
   _phys_io_switch = 0; // do not change!
@@ -149,9 +151,6 @@ void setup() {
   wifiMulti.addAP("ssid_from_AP_2", "your_password_for_AP_2");
   wifiMulti.addAP("ssid_from_AP_3", "your_password_for_AP_3");*/
 
-  /*Serial.println(WiFi.localIP()); // print IP address
-  Serial.println(WiFi.macAddress()); // print MAC address*/
-
   all_off();
 
   dht.begin();
@@ -163,10 +162,9 @@ void setup() {
   if (mdns_name != "") {MDNS.begin(mdns_name);} // mDNS responder for <hostname>.local
 
   EEPROM.begin(EEPROM_SIZE); // define EEPROM size
-
-  // read EEPROM values - what if empty?
+  // read EEPROM values
   output_state = EEPROM.read(ADDR_STATE);
-  hue = EEPROM.read(ADDR_HUE);
+  hue = read_eeprom_16_bit(ADDR_HUE_1, ADDR_HUE_2);
   sat = EEPROM.read(ADDR_SAT);
   lvl = EEPROM.read(ADDR_LVL);
 
@@ -183,7 +181,7 @@ void loop() {
   if (!wifi_status()) {return;} // not connected to network; restart loop
 
   if (otaFlag) {
-    MDNS.update();
+    if (mdns_name != "") {MDNS.update();}
     ArduinoOTA.handle();
   } // handle ota
 
@@ -219,7 +217,7 @@ void loop() {
     if (client.available()) {
       char c = client.read(); // returns one character
       readRequest += c; // adds new character to string
-      //readRequest += client.readStringUntil('\r'); // read from client until terminator + add to string
+      //readRequest += client.readStringUntil('\r'); // read from client until delimiter + add to string
       if (c == '\n') {break;} // new line marks end of request
     }
   }
@@ -278,6 +276,11 @@ void loop() {
       else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
     }
 
+    /*
+    * the following two responses are for determing the pwm resolution
+    * if there is a difference in brihgtness between those two responses,
+    * chances are high that pwm has 10-bit, or more, resolution
+    */
     // resolution testing 8-bit 0-255
     else if (readRequest.indexOf("/lamp/test/255") != -1) {
       lvl = 100;
@@ -364,7 +367,13 @@ void loop() {
   // read temp & humidity + response in json
   else if (readRequest.indexOf("/dht") != -1) {
     dht22();
-    String json_content = "{\"temperature\":" + String(temp_c) + ",\"humidity\":" + String(humidity) + "}";
+    //String json_content = "{\"temperature\":" + String(temp_c) + ",\"humidity\":" + String(humidity) + "}";
+    DynamicJsonDocument json(JSON_OBJECT_SIZE(2));
+    json["temperature"] = temp_c;
+    json["humidity"] = humidity;
+    String json_content;
+    serializeJson(json, json_content);
+
     client.print(buildHeader(200, http_header_content_json, json_content));
   }
 
@@ -394,72 +403,6 @@ void loop() {
 
   // print out everything
   else if (readRequest.indexOf("/log") != -1) {
-    bool output_state_eeprom = EEPROM.read(ADDR_STATE);
-    uint16_t hue_eeprom = EEPROM.read(ADDR_HUE);
-    uint16_t sat_eeprom = EEPROM.read(ADDR_SAT);
-    uint16_t lvl_eeprom = EEPROM.read(ADDR_LVL);
-    float ldr = analogRead(LDR);
-
-    String resetReason = ESP.getResetReason(); // reset reason in human readable format
-    uint16_t vcc = ESP.getVcc(); // supply voltage
-    // heap
-    uint32_t freeHeap;
-    uint16_t maxFreeBlockSize;
-    uint8_t heapFragmentation;
-    ESP.getHeapStats(&freeHeap, &maxFreeBlockSize, &heapFragmentation);
-    /*uint32_t freeHeap = ESP.getFreeHeap(); // free heap size
-    uint16_t maxFreeBlockSize = ESP.getMaxFreeBlockSize(); // maximum allocatable ram block regarding heap fragmentation
-    uint8_t heapFragmentation = ESP.getHeapFragmentation(); // fragmentation metric (0% is clean, more than ~50% is not harmless)*/
-    // chip
-    uint32_t chipId = ESP.getChipId(); // ESP8266 chip ID
-    String coreVersion = ESP.getCoreVersion(); // core version
-    String sdkVersion = ESP.getSdkVersion(); // SDK version
-    uint8_t cpuFreq = ESP.getCpuFreqMHz(); // CPU frequency in MHz
-    uint32_t cycleCount = ESP.getCycleCount(); // cpu instruction cycle count since start
-    // sketch
-    uint32_t sketchSize = ESP.getSketchSize(); // size of the current sketch
-    uint32_t freeSketchSpace = ESP.getFreeSketchSpace(); // free sketch space
-    String md5_sketch = ESP.getSketchMD5(); // MD5 of the current sketch
-    // flash
-    uint32_t flashChipId = ESP.getFlashChipId(); // flash chip ID
-    uint32_t flashChipSizeIde = ESP.getFlashChipSize(); // flash chip size, in bytes, as seen by the SDK
-    uint32_t flashChipSizeReal = ESP.getFlashChipRealSize(); // real chip size, in bytes, based on the flash chip ID
-    uint32_t flashChipSpeed = ESP.getFlashChipSpeed(); // flash chip frequency, in Hz
-    FlashMode_t ideMode = ESP.getFlashChipMode(); // flash chip mode
-    String flashChipMode = (ideMode == FM_QIO ? "QIO" : ideMode == FM_QOUT ? "QOUT" : ideMode == FM_DIO ? "DIO" : ideMode == FM_DOUT ? "DOUT" : "UNKNOWN");
-
-    String resp ="{";
-      // global
-      resp += "\"global\":{\"ip\":\"" + String(WiFi.localIP().toString()) + "\",\"mac\":\"" + String(WiFi.macAddress()) + "\",\"wifi_station_hostname\":" + wifi_station_get_hostname() + "},";
-      // ota
-      resp += "\"ota\":{\"enabled\":" + boolString(otaFlag) + ",\"button\":" + boolString(ota_io_button) + "},";
-      // lamp
-      resp += "\"lamp\":{";
-        resp += "\"values\":{\"state\":" + boolString(output_state) + ",\"hue\":" + String(hue) + ",\"saturation\":" + String(sat) + ",\"brightness\":" + String(lvl) + "},";
-        resp += "\"eeprom\":{\"state\":" + boolString(output_state_eeprom) + ",\"hue\":" + String(hue_eeprom) + ",\"saturation\":" + String(sat_eeprom) + ",\"brightness\":" + String(lvl_eeprom) + "},";
-        resp += "\"fade_values\":{\"i_hue\":" + String(i_hue) + ",\"i_sat\":" + String(i_sat) + ",\"i_lvl\":" + String(i_lvl) + "},";
-
-        resp += "\"output\":{";
-          resp += "\"values\":{\"r\":" + String(r_value) + ",\"g\":" + String(g_value) + ",\"b\":" + String(b_value) + "},";
-          resp += "\"normalized\":{\"r\":" + String(r_value * PWMRANGE_N / PWMRANGE) + ",\"g\":" + String(g_value * PWMRANGE_N / PWMRANGE) + ",\"b\":" + String(b_value * PWMRANGE_N / PWMRANGE) + "},";
-          resp += "\"hex_color\":\"#" + String(rgb2hex(r_value, g_value, b_value)) + "\"";
-        resp += "}";
-      resp += "},";
-      // rf
-      resp += "\"rf\":{\"rf1\":" + boolString(rf1_state) + ",\"rf2\":" + boolString(rf2_state) + ",\"rf3\":" + boolString(rf3_state) + "},";
-      // dht
-      resp += "\"dht\":{";
-        resp += "\"temperature\":{\"celsius\":" + String(temp_c) + ",\"farenheit\":" + String(temp_f) + "},";
-        resp += "\"humidity\":{\"measured\":" + String(humidity) + ",\"heat_index\":{\"celsius\":" + String(hic) + ",\"farenheit\":" + String(hif) + "}}";
-      resp += "},";
-      // other
-      resp += "\"wall_switch\":" + boolString(phys_io_switch) + ",";
-      resp += "\"ldr\":" + String(ldr) + ",";
-      resp += "\"r\":" + String(r) + ",";
-      // esp api
-      resp += "\"esp\":{\"chip_id\":" + String(chipId) + ",\"cpu_frequency\":" + String(cpuFreq) + ",\"core_version\":\"" + coreVersion + "\",\"cycle_count\":" + String(cycleCount) + ",\"free_heap\":" + String(freeHeap) + ",\"max_free_heap\":" + String(maxFreeBlockSize) + ",\"heap_fragmentation\":" + String(heapFragmentation) + ",\"reset_reason\":\"" + resetReason + "\",\"vcc\":" + String(vcc) + ",\"sketch\":{\"md5_of_sketch\":\"" + md5_sketch + "\",\"sketch_size\":" + String(sketchSize) + ",\"free_sketch_space\":" + String(freeSketchSpace) + "},\"flash\":{\"flash_chip_id\":" + String(flashChipId) + ",\"flash_chip_speed\":" + String(flashChipSpeed) + ",\"flash_chip_size_ide\":" + String(flashChipSizeIde) + ",\"flash_chip_size_real\":" + String(flashChipSizeReal) + ",\"flash_chip_mode\":\"" + flashChipMode + "\"}}";
-    resp += "}";
-
     client.print(buildHeader(200, http_header_content_json, stringifyLogJson()));
   }
 
@@ -520,11 +463,62 @@ void set_value(int set_r, int set_g, int set_b) {
 */
 void write_to_eeprom() {
   EEPROM.put(ADDR_STATE, output_state);
-  EEPROM.put(ADDR_HUE, hue);
+  write_eeprom_16_bit(hue, ADDR_HUE_1, ADDR_HUE_2);
+  //EEPROM.put(ADDR_HUE_1, hue);
   EEPROM.put(ADDR_SAT, sat);
   EEPROM.put(ADDR_LVL, lvl);
   EEPROM.commit(); // only commit
   //EEPROM.end(); // commit + release RAM of content
+}
+
+
+/*
+* store 16-bit value to eeprom
+*/
+void write_eeprom_16_bit(uint16_t data, uint8_t address_1, uint8_t address_2) {
+  uint8_t byte_1 = data >> 0; // lower order byte 0-255
+  uint8_t byte_2 = data >> 8; // higer order byte 256-65536
+  EEPROM.put(address_1, byte_1);
+  EEPROM.put(address_2, byte_2);
+  EEPROM.commit();
+}
+
+
+/*
+* read 16-bit value from eeprom
+*/
+uint16_t read_eeprom_16_bit(uint8_t address_1, uint8_t address_2) {
+  uint8_t byte_1 = EEPROM.read(address_1);
+  uint8_t byte_2 = EEPROM.read(address_2);
+  return ((uint16_t) byte_2 << 8) | byte_1;
+}
+
+
+/*
+* store 32-bit value to eeprom
+*/
+void write_eeprom_32_bit(uint32_t data, uint8_t address_1, uint8_t address_2, uint8_t address_3, uint8_t address_4) {
+  uint8_t byte_1 = data >> 0; // lower order byte
+  uint8_t byte_2 = data >> 8;
+  uint8_t byte_3 = data >> 16;
+  uint8_t byte_4 = data >> 24; // higher order byte
+  EEPROM.put(address_1, byte_1);
+  EEPROM.put(address_2, byte_2);
+  EEPROM.put(address_3, byte_3);
+  EEPROM.put(address_4, byte_4);
+  EEPROM.commit();
+}
+
+
+/*
+* read 32-bit value from eeprom
+*/
+uint32_t read_eeprom_32_bit(uint8_t address_1, uint8_t address_2, uint8_t address_3, uint8_t address_4) {
+  uint8_t byte_1 = EEPROM.read(address_1);
+  uint8_t byte_2 = EEPROM.read(address_2);
+  uint8_t byte_3 = EEPROM.read(address_3);
+  uint8_t byte_4 = EEPROM.read(address_4);
+  return ((uint32_t) byte_4 << 24) | (uint32_t) byte_3 << 16 | (uint32_t) byte_2 << 8 | byte_1;
 }
 
 
@@ -776,6 +770,7 @@ void OTA() {
 
 /*
 * cast boolean value to a string -> true or false
+* not needed anymore
 */
 String boolString(bool _bool) {return _bool ? "true" : "false";}
 
@@ -789,7 +784,7 @@ void hsv2rgb(float h, float s, float v) {
   float f, p, q, t, _r_value, _g_value, _b_value;
 
   if (h == 360) {h = 0;} // there is no case for i = 6
-  /*else if (h <= 240 && h >= 120) {
+  /*else if (h <= 240 && h >= 120) { // tried to restrict hue circle between red and blue (shorter path)
     h = 360 - (h - 240);
   }
   else if (h <= 0 && h <= 120) {
@@ -858,4 +853,130 @@ String rgb2hex(uint16_t _r_value, uint16_t _g_value, uint8_t _b_value) {
   uint8_t b_norm = _b_value * PWMRANGE_N / PWMRANGE;
   uint32_t hex_color = (r_norm << 16) | (g_norm << 8) | b_norm;
   return String(hex_color, HEX);
+}
+
+
+/*
+* create a json log with all variables
+*/
+String stringifyLogJson() {
+  size_t json_capacity;
+  json_capacity += JSON_OBJECT_SIZE(9); // whole json object
+  json_capacity += JSON_OBJECT_SIZE(6); // wifi
+  json_capacity += JSON_OBJECT_SIZE(2); // ota
+  json_capacity += (3 * JSON_OBJECT_SIZE(4)) + (4 * JSON_OBJECT_SIZE(3)); // lamp
+  json_capacity += JSON_OBJECT_SIZE(3); // rf
+  json_capacity += (4 * JSON_OBJECT_SIZE(2)); // dht
+  json_capacity += JSON_OBJECT_SIZE(8) + JSON_OBJECT_SIZE(5) + (3 * JSON_OBJECT_SIZE(3)); // esp
+  json_capacity += 1024; // string duplication
+
+  DynamicJsonDocument json_log(json_capacity);
+
+  FlashMode_t ideMode = ESP.getFlashChipMode(); // flash chip mode
+  String flashChipMode = (ideMode == FM_QIO ? "QIO" : ideMode == FM_QOUT ? "QOUT" : ideMode == FM_DIO ? "DIO" : ideMode == FM_DOUT ? "DOUT" : "UNKNOWN");
+
+  String wifiStatus[5];
+  wifiStatus[0] = "WL_IDLE_STATUS - when Wi-Fi is in process of changing between states"; //never reached
+  wifiStatus[1] = "WL_NO_SSID_AVAIL - in case configured SSID cannot be reached"; // never reached
+  wifiStatus[2] = "WL_CONNECTED - after connection is successfully established";
+  wifiStatus[3] = "WL_CONNECT_FAILED - if password is incorrect"; // never reached
+  wifiStatus[4] = "WL_DISCONNECTED - if module is not configured in station mode"; // never reached
+
+  JsonObject wifi = json_log.createNestedObject("wifi");
+    wifi["ip"] = WiFi.localIP().toString();
+    wifi["mac"] = WiFi.macAddress();
+    wifi["hostname"] = wifi_station_get_hostname();
+    wifi["ssid"] = wifi_ssid;
+    wifi["status"] = wifiStatus[WiFi.status() - 1]; // matching index from wifiString array
+    wifi["mdns"] = mdns_name;
+
+  JsonObject ota = json_log.createNestedObject("ota");
+    ota["enabled"] = otaFlag;
+    ota["button"] = !ota_io_button;
+
+  JsonObject lamp = json_log.createNestedObject("lamp");
+
+    JsonObject lamp_values = lamp.createNestedObject("values");
+      lamp_values["state"] = output_state;
+      lamp_values["hue"] = hue;
+      lamp_values["saturation"] = sat;
+      lamp_values["brightness"] = lvl;
+
+    JsonObject lamp_eeprom = lamp.createNestedObject("eeprom");
+      lamp_eeprom["state"] = (bool) EEPROM.read(ADDR_STATE);
+      lamp_eeprom["hue"] = read_eeprom_16_bit(ADDR_HUE_1, ADDR_HUE_2);//EEPROM.read(ADDR_HUE_1);
+      lamp_eeprom["saturation"] = EEPROM.read(ADDR_SAT);
+      lamp_eeprom["brightness"] = EEPROM.read(ADDR_LVL);
+
+    JsonObject lamp_fade_values = lamp.createNestedObject("fade_values");
+      lamp_fade_values["i_hue"] = i_hue;
+      lamp_fade_values["i_sat"] = i_sat;
+      lamp_fade_values["i_lvl"] = i_lvl;
+
+    JsonObject lamp_output = lamp.createNestedObject("output");
+      lamp_output["hex_color"] = "#" + String(rgb2hex(r_value, g_value, b_value));
+
+      JsonObject lamp_output_values = lamp_output.createNestedObject("values");
+        lamp_output_values["r"] = r_value;
+        lamp_output_values["g"] = g_value;
+        lamp_output_values["b"] = b_value;
+
+      JsonObject lamp_output_normalized = lamp_output.createNestedObject("normalized");
+        lamp_output_normalized["r"] = r_value * PWMRANGE_N / PWMRANGE;
+        lamp_output_normalized["g"] = g_value * PWMRANGE_N / PWMRANGE;
+        lamp_output_normalized["b"] = b_value * PWMRANGE_N / PWMRANGE;
+
+  JsonObject rf = json_log.createNestedObject("rf");
+    rf["rf1"] = rf1_state;
+    rf["rf2"] = rf2_state;
+    rf["rf3"] = rf3_state;
+
+  JsonObject dht = json_log.createNestedObject("dht");
+
+    JsonObject dht_temperature = dht.createNestedObject("temperature");
+      dht_temperature["celsius"] = temp_c;
+      dht_temperature["fahrenheit"] = temp_f;
+
+    JsonObject dht_humidity = dht.createNestedObject("humidity");
+      dht_humidity["measured"] = humidity;
+
+      JsonObject dht_humidity_heat_index = dht_humidity.createNestedObject("heat_index");
+        dht_humidity_heat_index["celsius"] = hic;
+        dht_humidity_heat_index["farenheit"] = hif;
+
+  json_log["physical_switch"] = !phys_io_switch; // invert because of pullup
+  json_log["light_dependent_resistor"] = analogRead(LDR);
+  json_log["r"] = r;
+
+  JsonObject esp = json_log.createNestedObject("esp");
+    esp["core_version"] = ESP.getCoreVersion(); // core version
+    esp["sdk_version"] = ESP.getSdkVersion(); // SDK version
+    esp["reset_reason"] = ESP.getResetReason(); // reset reason in human readable format
+    esp["vcc"] = ESP.getVcc(); // supply voltage
+
+    JsonObject esp_cpu = esp.createNestedObject("cpu");
+      esp_cpu["chip_id"] = ESP.getChipId(); // ESP8266 chip ID
+      esp_cpu["frequency"] = ESP.getCpuFreqMHz(); // CPU frequency in MHz
+      esp_cpu["cycle_count"] = ESP.getCycleCount(); // cpu instruction cycle count since start
+
+    JsonObject esp_heap = esp.createNestedObject("heap");
+      esp_heap["free_heap"] = ESP.getFreeHeap(); // free heap size
+      esp_heap["max_free_block_size"] = ESP.getMaxFreeBlockSize(); // maximum allocatable ram block regarding heap fragmentation
+      esp_heap["heap_fragmentation"] = ESP.getHeapFragmentation(); // fragmentation metric (0% is clean, >~50% is not harmless)
+
+    JsonObject esp_sketch = esp.createNestedObject("sketch");
+      esp_sketch["md5_of_sketch"] = ESP.getSketchMD5(); // MD5 of the current sketch
+      esp_sketch["sketch_size"] = ESP.getSketchSize(); // size of the current sketch
+      esp_sketch["free_sketch_space"] = ESP.getFreeSketchSpace(); // free sketch space
+
+    JsonObject esp_flash = esp.createNestedObject("flash");
+      esp_flash["chip_id"] = ESP.getFlashChipId(); // flash chip ID
+      esp_flash["frequency"] = ESP.getFlashChipSpeed(); // flash chip frequency, in Hz
+      esp_flash["size"] = ESP.getFlashChipSize(); // flash chip size, in bytes, as seen by the SDK
+      esp_flash["size_real"] = ESP.getFlashChipRealSize(); // real chip size, in bytes, based on the flash chip ID
+      esp_flash["mode"] = flashChipMode;
+
+  String json_out;
+  serializeJson(json_log, json_out);
+  return json_out;
 }

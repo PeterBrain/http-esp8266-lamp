@@ -84,8 +84,8 @@ Here are some ideas for leftover times in the future:
     * debugging via webinterface
   * general dashboard
   * ota upload - SPIFFS
-* configuration
-  * external json file
+* json parser & stringify
+  * configuration to external json file
 * daylight
   * change light temperature during day
 * motion detector
