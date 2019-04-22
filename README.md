@@ -14,10 +14,12 @@ OK, thats not exactly true. With this, you won't gain any HomeKit functionality 
 * mqtt support (currently in testing)
 * dimming curve optimized
 * states and values in permanent memory
+* party mode (strobe light)
+* multi wifi support
 
 ## Instructions
 **!Attention!**
-PINs of the device are mapped for WittyCloud. You have to change them for other devices.
+PINs of the device are mapped for WittyCloud. You may have to change them for other devices. NodeMCU is also fine.
 Don't forget to fill in your network SSID and password, otherwise it can't connect to it.
 
 ### OTA Update
@@ -91,4 +93,3 @@ Here are some ideas for leftover times in the future:
 * motion detector
 * alarm
   * synchronize via ifttt
-* party mode (flash)

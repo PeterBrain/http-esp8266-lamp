@@ -8,8 +8,8 @@
 * "" => look in the sketch folder first
 */
 #include <ESP8266WiFi.h>
-/*#include <ESP8266WiFiMulti.h>
-#include <WiFiUdp.h>
+#include <ESP8266WiFiMulti.h>
+/*#include <WiFiUdp.h>
 #include <WiFiClient.h>*/
 #include <ESP8266mDNS.h>
 #include <ArduinoOTA.h>
@@ -48,10 +48,9 @@
 #define MQTT_WILL_QOS     1    // mqtt will QoS
 #define MQTT_WILL_RETAIN  true // mqtt will retain
 
-const char* wifi_ssid    = ""; // wifi name
-const char* wifi_passwd  = ""; // wifi password
-const char* ap_ssid      = ""; // wifi name
-const char* ap_passwd    = ""; // wifi password
+const char* wifi[][2]    = {{"", ""},{"", ""}}; // ssid + password - // unknown size of an array with arrays of size 2
+const char* ap_ssid      = "ESP8266_AP"; // access point name
+const char* ap_passwd    = "put_password_here"; // access point password
 const char* mdns_name    = ""; // mDNS name => <name>.local
 const char* ota_name     = ""; // ota username
 const char* ota_passwd   = ""; // ota password
@@ -75,10 +74,11 @@ uint16_t rf3_code_off = 4116;  // RF3 off
 
 uint8_t fade_delay       = 6;    // delay between a change in brightness, hue & saturation
 uint8_t ota_led_interval = 100;  // delay between status led off and on (ota blinking)
+uint8_t strobe_frequency = 12;   // frequency for strobe light (party mode)
 uint16_t interval_dht    = 2000; // DHT22 - 2s
 uint32_t prev_ms_dht, prev_ms_ota_blink; // time vars (unsigned long)
 
-bool otaFlag, output_state, rf1_state, rf2_state, rf3_state, vcc_adc;
+bool otaFlag, output_state, rf1_state, rf2_state, rf3_state, vcc_adc, party_mode;
 
 uint8_t phys_io_switch, _phys_io_switch; // physical - current, prev
 uint8_t ota_io_button, _ota_io_button; // ota button - current, prev
@@ -105,12 +105,13 @@ WiFiServer server(server_port); // server instance; listen port 80
 WiFiClient client; // instantiate wifi client object
 PubSubClient MQTTclient(client); // instantiate mqtt client object
 //ADC_MODE(ADC_VCC); // reconfigure ADC for getVcc function
+ESP8266WiFiMulti wifiMulti;
 
 /*
 * init on startup
 */
 void setup() {
-  otaFlag = output_state = rf1_state = rf2_state = rf3_state = vcc_adc = false;
+  otaFlag = output_state = rf1_state = rf2_state = rf3_state = vcc_adc = party_mode = false;
 
   // init HSB values
   hue = 330;
@@ -146,15 +147,15 @@ void setup() {
   //WiFi.config(ip, gateway, subnet, dns1, dns2); // fixed ip and so on
   //WiFi.mode(WIFI_STA); // configure as wifi station - auto reconnect if lost
   WiFi.mode(WIFI_AP_STA); // configure as station and access point
-  WiFi.begin(wifi_ssid, wifi_passwd); // connect to network - (ssid, password, channel, bssid, connect)
+  //WiFi.begin(wifi_ssid, wifi_passwd); // connect to network - (ssid, password, channel, bssid, connect)
 
   WiFi.softAPConfig(ip, gateway, subnet);
   WiFi.softAP(ap_ssid, ap_passwd);
 
-  // When several wifi option are avaiable... take the strongest
-  /*wifiMulti.addAP("ssid_from_AP_1", "your_password_for_AP_1");
-  wifiMulti.addAP("ssid_from_AP_2", "your_password_for_AP_2");
-  wifiMulti.addAP("ssid_from_AP_3", "your_password_for_AP_3");*/
+  // When several wifi option are available... take the strongest
+  for (int i = 0; i < (sizeof(wifi)/sizeof(wifi[0])); i++) {
+    wifiMulti.addAP(wifi[i][0], wifi[i][1]);
+  }
 
   all_off();
 
@@ -211,6 +212,8 @@ void loop() {
     }
   }
 
+  if (party_mode) {party_strobe(strobe_frequency);} // in Hz - normal strobe frequency is 10-12Hz
+
   client = server.available();
 
   if (!client) {return;} // no client; restart loop
@@ -246,28 +249,34 @@ void loop() {
     }
 
     // hue value in degree (0-359)
-    else if (readRequest.indexOf("/lamp/hue/") != -1) {
+    else if (readRequest.indexOf("/hue/") != -1) {
       char charBuf_hue[50];
       readRequest.toCharArray(charBuf_hue, 50);
       hue = atoi(strtok(charBuf_hue, "GET /lamp/hue/"));
+      if (hue >= 360) {hue = 0;}
+      if (hue < 0) {hue = 0;}
       smooth_hsv(hue, sat, lvl);
       client.print(buildHeader(200, http_header_content_html, String(hue)));
     }
 
     // saturation value from 0 to 100
-    else if (readRequest.indexOf("/lamp/sat/") != -1) {
+    else if (readRequest.indexOf("/sat/") != -1) {
       char charBuf_sat[50];
       readRequest.toCharArray(charBuf_sat, 50);
       sat = atoi(strtok(charBuf_sat, "GET /lamp/sat/"));
+      if (sat > 100) {sat = 100;}
+      if (sat < 0) {sat = 0;}
       smooth_hsv(hue, sat, lvl);
       client.print(buildHeader(200, http_header_content_html, String(sat)));
     }
 
     // brightness level
-    else if (readRequest.indexOf("/lamp/lvl/") != -1) {
+    else if (readRequest.indexOf("/lvl/") != -1) {
       char charBuf[50];
       readRequest.toCharArray(charBuf, 50);
       lvl = atoi(strtok(charBuf, "GET /lamp/lvl/")); // strip down request
+      if (lvl > 100) {lvl = 100;}
+      if (lvl < 0) {lvl = 0;}
       smooth_hsv(hue, sat, lvl);
       client.print(buildHeader(200, http_header_content_html, String(lvl)));
     }
@@ -281,23 +290,46 @@ void loop() {
       else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
     }
 
+    // party mode
+    else if (readRequest.indexOf("/party/") != -1) {
+      if (readRequest.indexOf("/on") != -1) {
+        party_mode = true;
+        client.print(buildHeader(200, http_header_content_html, "Party mode enabled."));
+      }
+
+      else if (readRequest.indexOf("/off") != -1) {
+        party_mode = false;
+        client.print(buildHeader(200, http_header_content_html, "Party mode disabled."));
+      }
+
+      else if (readRequest.indexOf("/freq/") != -1) {
+        party_mode = true;
+        char charBuf[50];
+        readRequest.toCharArray(charBuf, 50);
+        strobe_frequency = atoi(strtok(charBuf, "GET /lamp/party/freq/")); // strip down request
+        client.print(buildHeader(200, http_header_content_html, "Party mode enabled with strobe frequency of " + String(strobe_frequency) + "."));
+      }
+    }
+
     /*
     * the following two responses are for determing the pwm resolution
     * if there is a difference in brihgtness between those two responses,
     * chances are high that pwm has 10-bit, or more, resolution
     */
     // resolution testing 8-bit 0-255
-    else if (readRequest.indexOf("/lamp/test/255") != -1) {
-      lvl = 100;
-      set_value(255,255,255);
-      client.print(buildHeader(200, http_header_content_html, "Lamp was set to 100% with 8-bit resolution"));
-    }
+    else if (readRequest.indexOf("/test/") != -1) {
+      if (readRequest.indexOf("/255") != -1) {
+        lvl = 100;
+        set_value(255, 255, 255);
+        client.print(buildHeader(200, http_header_content_html, "Lamp was set to 100% with 8-bit resolution"));
+      }
 
-    // resolution testing 10-bit 0-1023
-    else if (readRequest.indexOf("/lamp/test/1023") != -1) {
-      lvl = 100;
-      set_value(PWMRANGE,PWMRANGE,PWMRANGE);
-      client.print(buildHeader(200, http_header_content_html, "Lamp was set to 100% with 10-bit resolution"));
+      // resolution testing 10-bit 0-1023
+      else if (readRequest.indexOf("/1023") != -1) {
+        lvl = 100;
+        set_value(PWMRANGE, PWMRANGE, PWMRANGE);
+        client.print(buildHeader(200, http_header_content_html, "Lamp was set to 100% with 10-bit resolution"));
+      }
     }
 
     else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
@@ -428,11 +460,11 @@ void loop() {
 bool wifi_status() {
   bool wifi_status = false;
 
-  if (!(WiFi.status() != WL_CONNECTED) && !otaFlag) { //while (WiFi.waitForConnectResult() != WL_CONNECTED) // reconnect if lost
+  if (!(wifiMulti.run() != WL_CONNECTED) && !otaFlag) { //while (WiFi.waitForConnectResult() != WL_CONNECTED) or WiFi.status() != WL_CONNECTED // reconnect if lost
     digitalWrite(BUILTIN_LED, LOW); // inverted - led on
     wifi_status = true;
   }
-  else if (!(WiFi.status() != WL_CONNECTED) && otaFlag) {
+  else if (!(wifiMulti.run() != WL_CONNECTED) && otaFlag) {
     /*digitalWrite(BUILTIN_LED, !digitalRead(BUILTIN_LED)); // toggle
     delay(ota_led_interval);*/
 
@@ -565,9 +597,24 @@ void ota_toggle() {
     if (otaFlag) {OTA();} // start OTA service
   }
 
-  if (WiFi.status() != WL_CONNECTED) {otaFlag = false;} // disable OTA when not connected to wifi
+  if (wifiMulti.run() != WL_CONNECTED) {otaFlag = false;} // disable OTA when not connected to wifi
 
   _ota_io_button = ota_io_button; // new before state
+}
+
+
+/*
+* strobe light with adjustable frequency
+* period = 1/frequency
+*/
+void party_strobe(uint8_t frequency) {
+  if (lvl == 0) {
+    output_state = true;
+    lvl = 100;
+    set_value(PWMRANGE, PWMRANGE, PWMRANGE);
+  } else {all_off();}
+
+  delay(1000 / strobe_frequency);
 }
 
 
@@ -875,8 +922,9 @@ String stringifyLogJson() {
   size_t json_capacity;
   json_capacity += JSON_OBJECT_SIZE(9); // whole json object
   json_capacity += JSON_OBJECT_SIZE(6); // wifi
+  json_capacity += JSON_OBJECT_SIZE(4); // access point
   json_capacity += JSON_OBJECT_SIZE(2); // ota
-  json_capacity += (3 * JSON_OBJECT_SIZE(4)) + (4 * JSON_OBJECT_SIZE(3)); // lamp
+  json_capacity += JSON_OBJECT_SIZE(5) + (2 * JSON_OBJECT_SIZE(4)) + (4 * JSON_OBJECT_SIZE(3)) + JSON_OBJECT_SIZE(2); // lamp
   json_capacity += JSON_OBJECT_SIZE(3); // rf
   json_capacity += (4 * JSON_OBJECT_SIZE(2)); // dht
   json_capacity += JSON_OBJECT_SIZE(8) + JSON_OBJECT_SIZE(5) + (3 * JSON_OBJECT_SIZE(3)); // esp
@@ -900,9 +948,15 @@ String stringifyLogJson() {
     wifi["ip"] = WiFi.localIP().toString();
     wifi["mac"] = WiFi.macAddress();
     wifi["hostname"] = wifi_station_get_hostname();
-    wifi["ssid"] = wifi_ssid;
-    wifi["status"] = wifiStatus[WiFi.status() - 1]; // matching index from wifiString array
+    wifi["ssid"] = WiFi.SSID();
+    wifi["status"] = wifiStatus[wifiMulti.run() - 1]; // matching index from wifiString array
     wifi["mdns"] = mdns_name;
+
+  JsonObject ap = json_log.createNestedObject("ap");
+    ap["ssid"] = ap_ssid;
+    ap["ip"] = ip.toString();
+    ap["gateway"] = gateway.toString();
+    ap["subnet"] = subnet.toString();
 
   JsonObject ota = json_log.createNestedObject("ota");
     ota["enabled"] = otaFlag;
@@ -918,7 +972,7 @@ String stringifyLogJson() {
 
     JsonObject lamp_eeprom = lamp.createNestedObject("eeprom");
       lamp_eeprom["state"] = (bool) EEPROM.read(ADDR_STATE);
-      lamp_eeprom["hue"] = read_eeprom_16_bit(ADDR_HUE_1, ADDR_HUE_2);//EEPROM.read(ADDR_HUE_1);
+      lamp_eeprom["hue"] = read_eeprom_16_bit(ADDR_HUE_1, ADDR_HUE_2); //EEPROM.read(ADDR_HUE_1);
       lamp_eeprom["saturation"] = EEPROM.read(ADDR_SAT);
       lamp_eeprom["brightness"] = EEPROM.read(ADDR_LVL);
 
@@ -926,6 +980,10 @@ String stringifyLogJson() {
       lamp_fade_values["i_hue"] = i_hue;
       lamp_fade_values["i_sat"] = i_sat;
       lamp_fade_values["i_lvl"] = i_lvl;
+
+    JsonObject lamp_party = lamp.createNestedObject("party");
+      lamp_party["party_mode"] = party_mode;
+      lamp_party["strobe_frequency"] = strobe_frequency;
 
     JsonObject lamp_output = lamp.createNestedObject("output");
       lamp_output["hex_color"] = "#" + String(rgb2hex(r_value, g_value, b_value));
@@ -952,7 +1010,7 @@ String stringifyLogJson() {
       dht_temperature["fahrenheit"] = temp_f;
 
     JsonObject dht_humidity = dht.createNestedObject("humidity");
-      dht_humidity["measured"] = humidity;
+      dht_humidity["value"] = humidity;
 
       JsonObject dht_humidity_heat_index = dht_humidity.createNestedObject("heat_index");
         dht_humidity_heat_index["celsius"] = hic;
