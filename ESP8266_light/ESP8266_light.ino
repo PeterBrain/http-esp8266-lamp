@@ -50,6 +50,8 @@
 
 const char* wifi_ssid    = ""; // wifi name
 const char* wifi_passwd  = ""; // wifi password
+const char* ap_ssid      = ""; // wifi name
+const char* ap_passwd    = ""; // wifi password
 const char* mdns_name    = ""; // mDNS name => <name>.local
 const char* ota_name     = ""; // ota username
 const char* ota_passwd   = ""; // ota password
@@ -71,12 +73,12 @@ uint16_t rf2_code_off = 16404; // RF2 off
 uint16_t rf3_code_on  = 4117;  // RF3 on
 uint16_t rf3_code_off = 4116;  // RF3 off
 
-uint8_t fade_delay       = 6;    // delay between a change - 6ms - delay between brightness, hue & saturation steps
+uint8_t fade_delay       = 6;    // delay between a change in brightness, hue & saturation
 uint8_t ota_led_interval = 100;  // delay between status led off and on (ota blinking)
 uint16_t interval_dht    = 2000; // DHT22 - 2s
-uint32_t prev_ms_dht; // time vars (unsigned long)
+uint32_t prev_ms_dht, prev_ms_ota_blink; // time vars (unsigned long)
 
-bool otaFlag, output_state, rf1_state, rf2_state, rf3_state;
+bool otaFlag, output_state, rf1_state, rf2_state, rf3_state, vcc_adc;
 
 uint8_t phys_io_switch, _phys_io_switch; // physical - current, prev
 uint8_t ota_io_button, _ota_io_button; // ota button - current, prev
@@ -102,14 +104,13 @@ RCSwitch RF_Switch = RCSwitch(); // RF switch
 WiFiServer server(server_port); // server instance; listen port 80
 WiFiClient client; // instantiate wifi client object
 PubSubClient MQTTclient(client); // instantiate mqtt client object
-ADC_MODE(ADC_VCC); // reconfigure ADC for getVcc function
-
+//ADC_MODE(ADC_VCC); // reconfigure ADC for getVcc function
 
 /*
 * init on startup
 */
 void setup() {
-  otaFlag = output_state = rf1_state = rf2_state = rf3_state = false;
+  otaFlag = output_state = rf1_state = rf2_state = rf3_state = vcc_adc = false;
 
   // init HSB values
   hue = 330;
@@ -143,8 +144,12 @@ void setup() {
   RF_Switch.setRepeatTransmit(15); // transmission repetitions*/
 
   //WiFi.config(ip, gateway, subnet, dns1, dns2); // fixed ip and so on
-  WiFi.mode(WIFI_STA); // configure as wifi station - auto reconnect if lost
+  //WiFi.mode(WIFI_STA); // configure as wifi station - auto reconnect if lost
+  WiFi.mode(WIFI_AP_STA); // configure as station and access point
   WiFi.begin(wifi_ssid, wifi_passwd); // connect to network - (ssid, password, channel, bssid, connect)
+
+  WiFi.softAPConfig(ip, gateway, subnet);
+  WiFi.softAP(ap_ssid, ap_passwd);
 
   // When several wifi option are avaiable... take the strongest
   /*wifiMulti.addAP("ssid_from_AP_1", "your_password_for_AP_1");
@@ -428,8 +433,15 @@ bool wifi_status() {
     wifi_status = true;
   }
   else if (!(WiFi.status() != WL_CONNECTED) && otaFlag) {
-    digitalWrite(BUILTIN_LED, !digitalRead(BUILTIN_LED)); // toggle
-    delay(ota_led_interval);
+    /*digitalWrite(BUILTIN_LED, !digitalRead(BUILTIN_LED)); // toggle
+    delay(ota_led_interval);*/
+
+    uint32_t current_ms = millis();
+    if (current_ms - prev_ms_ota_blink >= ota_led_interval) {
+      prev_ms_ota_blink = current_ms;
+      digitalWrite(BUILTIN_LED, !digitalRead(BUILTIN_LED)); // toggle
+    }
+
     wifi_status = true;
   }
   else {digitalWrite(BUILTIN_LED, HIGH);} // inverted - led off
@@ -872,6 +884,8 @@ String stringifyLogJson() {
 
   DynamicJsonDocument json_log(json_capacity);
 
+  dht22();
+
   FlashMode_t ideMode = ESP.getFlashChipMode(); // flash chip mode
   String flashChipMode = (ideMode == FM_QIO ? "QIO" : ideMode == FM_QOUT ? "QOUT" : ideMode == FM_DIO ? "DIO" : ideMode == FM_DOUT ? "DOUT" : "UNKNOWN");
 
@@ -945,14 +959,14 @@ String stringifyLogJson() {
         dht_humidity_heat_index["farenheit"] = hif;
 
   json_log["physical_switch"] = !phys_io_switch; // invert because of pullup
-  json_log["light_dependent_resistor"] = analogRead(LDR);
+  if (!vcc_adc) {json_log["light_dependent_resistor"] = analogRead(LDR);}
   json_log["r"] = r;
 
   JsonObject esp = json_log.createNestedObject("esp");
     esp["core_version"] = ESP.getCoreVersion(); // core version
     esp["sdk_version"] = ESP.getSdkVersion(); // SDK version
     esp["reset_reason"] = ESP.getResetReason(); // reset reason in human readable format
-    esp["vcc"] = ESP.getVcc(); // supply voltage
+    if (vcc_adc) {esp["vcc"] = ESP.getVcc();} // supply voltage
 
     JsonObject esp_cpu = esp.createNestedObject("cpu");
       esp_cpu["chip_id"] = ESP.getChipId(); // ESP8266 chip ID
