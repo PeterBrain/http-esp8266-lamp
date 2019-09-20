@@ -48,7 +48,7 @@
 #define MQTT_WILL_QOS     1    // mqtt will QoS
 #define MQTT_WILL_RETAIN  true // mqtt will retain
 
-const char* wifi[][2]    = {{"", ""},{"", ""}}; // ssid + password - // unknown size of an array with arrays of size 2
+const char* wifi[][2]    = {}; // ssid + password - // unknown size of an array with arrays of size 2 // {{"ssid1", "password1"},{"ssid2", "password2"},...}
 const char* ap_ssid      = "ESP8266_AP"; // access point name
 const char* ap_passwd    = "put_password_here"; // access point password
 const char* mdns_name    = ""; // mDNS name => <name>.local
@@ -92,6 +92,7 @@ String http_header_content_html = "Content-Type: text/html"; // content = html
 String http_header_content_json = "Content-Type: application/json; charset=utf-8"; // content = json
 String page_not_found           = "404 - Not Found"; // text for error 404
 String newLine                  = "\r\n"; // carriage return & new line
+String path                     = "";
 
 IPAddress ip      (192,168,1,10);  // fixed IP (0,0,0,0)
 IPAddress subnet  (255,255,255,0); // subnet mask
@@ -232,8 +233,10 @@ void loop() {
 
   // lamp
   if (readRequest.indexOf("/lamp/") != -1) {
+    path = "/lamp/";
+
     // turn lamp off
-    if (readRequest.indexOf("/lamp/off") != -1) {
+    if (readRequest.indexOf(path + "off") != -1) {
       if (output_state == true) {
         lvl = 0;
         smooth_hsv(hue, sat, lvl);
@@ -242,17 +245,18 @@ void loop() {
     }
 
     // turn lamp on
-    else if (readRequest.indexOf("/lamp/on") != -1) {
+    else if (readRequest.indexOf(path + "on") != -1) {
       if (lvl == 0) {lvl = 100;}
       smooth_hsv(hue, sat, lvl);
       client.print(buildHeader(200, http_header_content_html, String(output_state)));
     }
 
     // hue value in degree (0-359)
-    else if (readRequest.indexOf("/hue/") != -1) {
-      char charBuf_hue[50];
-      readRequest.toCharArray(charBuf_hue, 50);
-      hue = atoi(strtok(charBuf_hue, "GET /lamp/hue/"));
+    else if (readRequest.indexOf(path + "hue/") != -1) {
+      char charBuf[64], delimiter[64];
+      readRequest.toCharArray(charBuf, 64);
+      String("GET " + path + "hue/").toCharArray(delimiter, 64);
+      hue = atoi(strtok(charBuf, delimiter)); // strip down request
       if (hue >= 360) {hue = 0;}
       if (hue < 0) {hue = 0;}
       smooth_hsv(hue, sat, lvl);
@@ -260,10 +264,11 @@ void loop() {
     }
 
     // saturation value from 0 to 100
-    else if (readRequest.indexOf("/sat/") != -1) {
-      char charBuf_sat[50];
-      readRequest.toCharArray(charBuf_sat, 50);
-      sat = atoi(strtok(charBuf_sat, "GET /lamp/sat/"));
+    else if (readRequest.indexOf(path + "sat/") != -1) {
+      char charBuf[64], delimiter[64];
+      readRequest.toCharArray(charBuf, 64);
+      String("GET " + path + "sat/").toCharArray(delimiter, 64);
+      sat = atoi(strtok(charBuf, delimiter)); // strip down request
       if (sat > 100) {sat = 100;}
       if (sat < 0) {sat = 0;}
       smooth_hsv(hue, sat, lvl);
@@ -271,10 +276,11 @@ void loop() {
     }
 
     // brightness level
-    else if (readRequest.indexOf("/lvl/") != -1) {
-      char charBuf[50];
-      readRequest.toCharArray(charBuf, 50);
-      lvl = atoi(strtok(charBuf, "GET /lamp/lvl/")); // strip down request
+    else if (readRequest.indexOf(path + "lvl/") != -1) {
+      char charBuf[64], delimiter[64];
+      readRequest.toCharArray(charBuf, 64);
+      String("GET " + path + "lvl/").toCharArray(delimiter, 64);
+      lvl = atoi(strtok(charBuf, delimiter)); // strip down request
       if (lvl > 100) {lvl = 100;}
       if (lvl < 0) {lvl = 0;}
       smooth_hsv(hue, sat, lvl);
@@ -282,33 +288,40 @@ void loop() {
     }
 
     // status
-    else if (readRequest.indexOf("/status/") != -1) {
-      if (readRequest.indexOf("/lamp/status/io") != -1) {client.print(buildHeader(200, http_header_content_html, String(output_state)));}
-      else if (readRequest.indexOf("/lamp/status/hue") != -1) {client.print(buildHeader(200, http_header_content_html, String(hue)));}
-      else if (readRequest.indexOf("/lamp/status/sat") != -1) {client.print(buildHeader(200, http_header_content_html, String(sat)));}
-      else if (readRequest.indexOf("/lamp/status/lvl") != -1) {client.print(buildHeader(200, http_header_content_html, String(lvl)));}
+    else if (readRequest.indexOf(path + "status/") != -1) {
+      path = path + "status/";
+
+      if (readRequest.indexOf(path + "io") != -1) {client.print(buildHeader(200, http_header_content_html, String(output_state)));}
+      else if (readRequest.indexOf(path + "hue") != -1) {client.print(buildHeader(200, http_header_content_html, String(hue)));}
+      else if (readRequest.indexOf(path + "sat") != -1) {client.print(buildHeader(200, http_header_content_html, String(sat)));}
+      else if (readRequest.indexOf(path + "lvl") != -1) {client.print(buildHeader(200, http_header_content_html, String(lvl)));}
       else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
     }
 
     // party mode
-    else if (readRequest.indexOf("/party/") != -1) {
-      if (readRequest.indexOf("/on") != -1) {
+    else if (readRequest.indexOf(path + "party/") != -1) {
+      path = path + "party/";
+
+      if (readRequest.indexOf(path + "on") != -1) {
         party_mode = true;
         client.print(buildHeader(200, http_header_content_html, "Party mode enabled."));
       }
 
-      else if (readRequest.indexOf("/off") != -1) {
+      else if (readRequest.indexOf(path + "off") != -1) {
         party_mode = false;
         client.print(buildHeader(200, http_header_content_html, "Party mode disabled."));
       }
 
-      else if (readRequest.indexOf("/freq/") != -1) {
-        party_mode = true;
-        char charBuf[50];
-        readRequest.toCharArray(charBuf, 50);
-        strobe_frequency = atoi(strtok(charBuf, "GET /lamp/party/freq/")); // strip down request
+      else if (readRequest.indexOf(path + "freq/") != -1) {
+        char charBuf[64], delimiter[64];
+        readRequest.toCharArray(charBuf, 64);
+        String("GET " + path + "freq/").toCharArray(delimiter, 64);
+        strobe_frequency = atoi(strtok(charBuf, delimiter)); // strip down request
+        party_mode = true; // enable after setting the frequency
         client.print(buildHeader(200, http_header_content_html, "Party mode enabled with strobe frequency of " + String(strobe_frequency) + "."));
       }
+
+      else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
     }
 
     /*
@@ -317,15 +330,17 @@ void loop() {
     * chances are high that pwm has 10-bit, or more, resolution
     */
     // resolution testing 8-bit 0-255
-    else if (readRequest.indexOf("/test/") != -1) {
-      if (readRequest.indexOf("/255") != -1) {
+    else if (readRequest.indexOf(path + "test/") != -1) {
+      path = path + "test/";
+
+      if (readRequest.indexOf(path + "255") != -1) {
         lvl = 100;
         set_value(255, 255, 255);
         client.print(buildHeader(200, http_header_content_html, "Lamp was set to 100% with 8-bit resolution"));
       }
 
       // resolution testing 10-bit 0-1023
-      else if (readRequest.indexOf("/1023") != -1) {
+      else if (readRequest.indexOf(path + "1023") != -1) {
         lvl = 100;
         set_value(PWMRANGE, PWMRANGE, PWMRANGE);
         client.print(buildHeader(200, http_header_content_html, "Lamp was set to 100% with 10-bit resolution"));
@@ -337,66 +352,72 @@ void loop() {
 
   // rf1
   else if (readRequest.indexOf("/rf1/") != -1) {
+    path = "/rf1/";
+
     // turn on rf1
-    if (readRequest.indexOf("/rf1/on") != -1) {
+    if (readRequest.indexOf(path + "on") != -1) {
       RF_Switch.send(rf1_code_on, 24);
       rf1_state = true;
       client.print(buildHeader(200, http_header_content_html, String(rf1_code_on)));
     }
 
     // switch off rf1
-    else if (readRequest.indexOf("/rf1/off") != -1) {
+    else if (readRequest.indexOf(path + "off") != -1) {
       RF_Switch.send(rf1_code_off, 24);
       rf1_state = false;
       client.print(buildHeader(200, http_header_content_html, String(rf1_code_off)));
     }
 
     // rf1 status
-    else if (readRequest.indexOf("/rf1/status/io") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf1_state)));}
+    else if (readRequest.indexOf(path + "status/io") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf1_state)));}
 
     else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
   }
 
   // rf2
   else if (readRequest.indexOf("/rf2/") != -1) {
+    path = "/rf2/";
+
     // turn on rf2
-    if (readRequest.indexOf("/rf2/on") != -1) {
+    if (readRequest.indexOf(path + "on") != -1) {
       RF_Switch.send(rf2_code_on, 24);
       rf2_state = true;
       client.print(buildHeader(200, http_header_content_html, String(rf2_code_on)));
     }
 
     // turn off rf2
-    else if (readRequest.indexOf("/rf2/off") != -1) {
+    else if (readRequest.indexOf(path + "off") != -1) {
       RF_Switch.send(rf2_code_off, 24);
       rf2_state = false;
       client.print(buildHeader(200, http_header_content_html, String(rf2_code_off)));
     }
 
     // rf2 status
-    else if (readRequest.indexOf("/rf2/status/io") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf2_state)));}
+    else if (readRequest.indexOf(path + "status/io") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf2_state)));}
 
     else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
   }
 
   // rf3
   else if (readRequest.indexOf("/rf3/") != -1) {
+    path = "/rf3/";
+
     // turn on rf3
-    if (readRequest.indexOf("/rf3/on") != -1) {
+    if (readRequest.indexOf(path + "on") != -1) {
       RF_Switch.send(rf3_code_on, 24);
       rf3_state = true;
       client.print(buildHeader(200, http_header_content_html, String(rf3_code_on)));
     }
 
     // turn off rf3
-    else if (readRequest.indexOf("/rf3/off") != -1) {
+    else if (readRequest.indexOf(path + "off") != -1) {
       RF_Switch.send(rf3_code_off, 24);
       rf3_state = false;
       client.print(buildHeader(200, http_header_content_html, String(rf3_code_off)));
     }
 
     // rf3 status
-    else if (readRequest.indexOf("/rf3/status/io") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf3_state)));}
+    else if (readRequest.indexOf(path + "status/io") != -1) {client.print(buildHeader(200, http_header_content_html, String(rf3_state)));}
 
     else {client.print(buildHeader(404, http_header_content_html, page_not_found));}
   }
@@ -448,6 +469,7 @@ void loop() {
 
   client.flush();
   client.stop(); // stops request and throws error in browser
+  path = "";
 }
 
 

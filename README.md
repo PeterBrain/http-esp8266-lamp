@@ -1,4 +1,4 @@
-# HomeBridge HTTP esp8266 Light
+# HomeBridge HTTP esp8266 Lamp
 > HomeKit support for your not so smart lamp.
 
 OK, thats not exactly true. With this, you won't gain any HomeKit functionality without any further steps, but it acts as an interface to [HomeBridge](https://github.com/nfarina/homebridge) ([official website](https://homebridge.io/)). I addition to homebridge, you need the extension [homebridge-http](https://github.com/PeterBrain/homebridge-http) and [homebridge-http-temperature-humidity](https://github.com/PeterBrain/homebridge-http-temperature-humidity).
@@ -59,12 +59,24 @@ The total will be higher if you don't have some parts laying around. Remember: A
 
 I made this documentation for myself, not because I need it, just because I was bored and had nothing else to do.
 
+## Available URIs
+### General
+* http://<server_ip>/lamp/party/on
+* http://<server_ip>/lamp/party/off
+* http://<server_ip>/lamp/party/freq/<int>
+* http://<server_ip>/lamp/test/255
+* http://<server_ip>/lamp/test/1023
+* http://<server_ip>/log
+* http://<server_ip>/ota
+* http://<server_ip>/ota/false
+* http://<server_ip>/restart
+
 ### Homebridge URIs
 * http://<server_ip>/lamp/off
 * http://<server_ip>/lamp/on
-* http://<server_ip>/lamp/hue/
-* http://<server_ip>/lamp/sat/
-* http://<server_ip>/lamp/lvl/
+* http://<server_ip>/lamp/hue/<int>
+* http://<server_ip>/lamp/sat/<int>
+* http://<server_ip>/lamp/lvl/<int>
 * http://<server_ip>/lamp/status/io
 * http://<server_ip>/lamp/status/hue
 * http://<server_ip>/lamp/status/sat
@@ -79,8 +91,7 @@ Here are some ideas for leftover times in the future:
 * rf receiver
   * receive command from rf remote
 * second lamp
-  * ability to control
-  * brightness, hue, saturation
+  * ability to control (brightness, hue, saturation)
 * web interface
   * serial monitor
     * debugging via webinterface
