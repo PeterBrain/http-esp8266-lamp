@@ -1,4 +1,4 @@
-# HomeBridge HTTP esp8266 Lamp
+# HTTP esp8266 Lamp
 > HomeKit support for your not so smart lamp.
 
 OK, thats not exactly true. With this, you won't gain any HomeKit functionality without any further steps, but it acts as an interface to [HomeBridge](https://github.com/nfarina/homebridge) ([official website](https://homebridge.io/)). I addition to homebridge, you need the extension [homebridge-http](https://github.com/PeterBrain/homebridge-http) and [homebridge-http-temperature-humidity](https://github.com/PeterBrain/homebridge-http-temperature-humidity).
@@ -16,6 +16,7 @@ OK, thats not exactly true. With this, you won't gain any HomeKit functionality 
 * states and values in permanent memory
 * party mode (strobe light)
 * multi wifi support
+* Alexa support
 
 ## Instructions
 **!Attention!**

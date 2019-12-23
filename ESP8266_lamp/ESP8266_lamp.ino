@@ -1,5 +1,5 @@
 /*
-* HomeBridge HTTP esp8266 Light
+* HTTP esp8266 Light
 */
 
 /*
@@ -18,6 +18,7 @@
 #include <EEPROM.h>
 #include <DHT.h>
 #include <RCSwitch.h>
+#include <fauxmoESP.h>
 
 
 /*
@@ -106,7 +107,8 @@ WiFiServer server(server_port); // server instance; listen port 80
 WiFiClient client; // instantiate wifi client object
 PubSubClient MQTTclient(client); // instantiate mqtt client object
 //ADC_MODE(ADC_VCC); // reconfigure ADC for getVcc function
-ESP8266WiFiMulti wifiMulti;
+ESP8266WiFiMulti wifiMulti; // Multi Wifi
+fauxmoESP fauxmo; // Amazon Alexa support
 
 /*
 * init on startup
@@ -145,13 +147,15 @@ void setup() {
   RF_Switch.setProtocol(2); // default = 1
   RF_Switch.setRepeatTransmit(15); // transmission repetitions*/
 
-  //WiFi.config(ip, gateway, subnet, dns1, dns2); // fixed ip and so on
   //WiFi.mode(WIFI_STA); // configure as wifi station - auto reconnect if lost
   WiFi.mode(WIFI_AP_STA); // configure as station and access point
-  //WiFi.begin(wifi_ssid, wifi_passwd); // connect to network - (ssid, password, channel, bssid, connect)
 
   WiFi.softAPConfig(ip, gateway, subnet);
-  WiFi.softAP(ap_ssid, ap_passwd);
+  WiFi.softAP(ap_ssid, ap_passwd); //, ap_channel
+  WiFi.softAPdisconnect(true);
+
+  //WiFi.config(ip, gateway, subnet, dns1, dns2); // fixed ip and so on
+  //WiFi.begin(wifi_ssid, wifi_passwd); // connect to network - (ssid, password, channel, bssid, connect)
 
   // When several wifi option are available... take the strongest
   for (int i = 0; i < (sizeof(wifi)/sizeof(wifi[0])); i++) {
@@ -178,12 +182,35 @@ void setup() {
   if (output_state) {smooth_hsv(hue, sat, lvl);} // restore last state
 
   r = (100 * log10(2)) / (log10(100)); // pwmSteps * log10(2) / log10(maxPWMrange)
-}
 
+  // alexa support
+  fauxmo.createServer(true);
+  fauxmo.setPort(81);
+  fauxmo.enable(true);
+  fauxmo.addDevice(TRIPOD);
+
+  fauxmo.onSetState([](unsigned char device_id, const char * device_name, bool state, unsigned char value) {
+    // callback when a command from Alexa is received
+    // state: boolean; value: int from 0 to 255 (say "set light to 50%" an you will receive a 128)
+
+    //Serial.printf("[MAIN] Device #%d (%s) state: %s value: %d\n", device_id, device_name, state ? "ON" : "OFF", value);
+    if (strcmp(device_name, TRIPOD) == 0) {
+      if (state) {
+        RF_Switch.send(rf3_code_on, 24);
+        rf3_state = true;
+      } else {
+        RF_Switch.send(rf3_code_off, 24);
+        rf3_state = false;
+      }
+    }
+  });
+}
 
 void loop() {
   ota_toggle();
   phys_switch();
+
+  fauxmo.handle();
 
   if (!wifi_status()) {return;} // not connected to network; restart loop
 
