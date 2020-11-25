@@ -1,0 +1,61 @@
+{
+  "wifi":[
+    ["SSID1", "Password1"],
+    ["SSID2", "Password2"],
+    ["SSID3", "Password3"]
+  ],
+  "ap":{
+    "ssid":"ESP8266_AP",
+    "password":"put_password_here"
+  },
+  "interface": {
+    "ip":"(192,168,1,10)",
+    "subnet":"(255,255,255,0)",
+    "gateway":"(192,168,1,1)",
+    "dns1":"(1,1,1,1)",
+    "dns2":"(1,0,0,1)"
+  },
+  "server_port":80,
+  "mdns":"esp8266",
+  "ota":{
+    "user":"",
+    "password":"",
+    "port":8266,
+    "led_interval":100
+  },
+  "mqtt":{
+    "server":"",
+    "port":1883,
+    "topic":[
+      "device_status",
+      "lamp"
+    ],
+    "id":"esp8266",
+    "user":"",
+    "password":""
+  },
+  "rf":{
+    "rf1":{
+      "on":21,
+      "off":20
+    },
+    "rf2":{
+      "on":16405,
+      "off":16404
+    },
+    "rf3":{
+      "on":4117,
+      "off":4116
+    }
+  },
+  "timer":{
+    "dht_interval":2000,
+    "fade_delay":6
+  },
+  "lamp":{
+    "hue":330,
+    "sat":75,
+    "lvl":0,
+    "strobe_frequency":12
+  }
+}

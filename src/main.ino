@@ -7,6 +7,7 @@
 * <> => in library folder
 * "" => look in the sketch folder first
 */
+#include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WiFiMulti.h>
 /*#include <WiFiUdp.h>
@@ -49,7 +50,9 @@
 #define MQTT_WILL_QOS     1    // mqtt will QoS
 #define MQTT_WILL_RETAIN  true // mqtt will retain
 
-const char* wifi[][2]    = {}; // ssid + password - // unknown size of an array with arrays of size 2 // {{"ssid1", "password1"},{"ssid2", "password2"},...}
+#define TRIPOD "Tripod"
+
+const char* wifi[][2]    = {}; // unknown size of an array with arrays of size 2 // {{"ssid1", "password1"},{"ssid2", "password2"},...}
 const char* ap_ssid      = "ESP8266_AP"; // access point name
 const char* ap_passwd    = "put_password_here"; // access point password
 const char* mdns_name    = ""; // mDNS name => <name>.local
@@ -285,7 +288,7 @@ void loop() {
       String("GET " + path + "hue/").toCharArray(delimiter, 64);
       hue = atoi(strtok(charBuf, delimiter)); // strip down request
       if (hue >= 360) {hue = 0;}
-      if (hue < 0) {hue = 0;}
+      else if (hue < 0) {hue = 0;}
       smooth_hsv(hue, sat, lvl);
       client.print(buildHeader(200, http_header_content_html, String(hue)));
     }
@@ -297,7 +300,7 @@ void loop() {
       String("GET " + path + "sat/").toCharArray(delimiter, 64);
       sat = atoi(strtok(charBuf, delimiter)); // strip down request
       if (sat > 100) {sat = 100;}
-      if (sat < 0) {sat = 0;}
+      else if (sat < 0) {sat = 0;}
       smooth_hsv(hue, sat, lvl);
       client.print(buildHeader(200, http_header_content_html, String(sat)));
     }
@@ -309,7 +312,7 @@ void loop() {
       String("GET " + path + "lvl/").toCharArray(delimiter, 64);
       lvl = atoi(strtok(charBuf, delimiter)); // strip down request
       if (lvl > 100) {lvl = 100;}
-      if (lvl < 0) {lvl = 0;}
+      else if (lvl < 0) {lvl = 0;}
       smooth_hsv(hue, sat, lvl);
       client.print(buildHeader(200, http_header_content_html, String(lvl)));
     }
